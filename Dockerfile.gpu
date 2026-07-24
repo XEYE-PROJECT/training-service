@@ -1,0 +1,52 @@
+# Imagen GPU: RunPod Serverless (CMD por defecto) y AWS Batch en EC2 con GPU (sobrescribiendo
+# el CMD con `python -m app.entrypoints.cli`). Es la imagen para ENRICHER=local: la GPU baja
+# el paso LLM de ~7 s/elemento a bastante menos de un segundo.
+FROM nvidia/cuda:12.1.1-runtime-ubuntu22.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PIP_NO_CACHE_DIR=1 \
+    HF_HOME=/app/.hf-cache
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        python3.11 python3.11-venv python3-pip git curl \
+    && ln -sf /usr/bin/python3.11 /usr/bin/python \
+    && ln -sf /usr/bin/python3.11 /usr/bin/python3 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN python -m pip install --upgrade pip
+
+RUN pip install torch --index-url https://download.pytorch.org/whl/cu121
+
+# Wheel CUDA precompilada: compilar llama-cpp-python con nvcc aquí exigiría la imagen base
+# `devel` y mucha RAM/disco sin beneficio alguno.
+RUN pip install --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu121 \
+        "llama-cpp-python==0.3.5"
+
+COPY requirements.txt ./
+RUN pip install -r requirements.txt "runpod>=1.7,<2.0"
+
+ARG EMBEDDING_MODEL=paraphrase-multilingual-MiniLM-L12-v2
+ENV EMBEDDING_MODEL=${EMBEDDING_MODEL}
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('${EMBEDDING_MODEL}')"
+
+ARG LLM_MODEL_REPO=bartowski/Qwen2.5-3B-Instruct-GGUF
+ARG LLM_MODEL_FILE=Qwen2.5-3B-Instruct-Q4_K_M.gguf
+ENV LLM_MODEL_PATH=/app/models/${LLM_MODEL_FILE}
+RUN mkdir -p /app/models \
+    && python -c "from huggingface_hub import hf_hub_download; hf_hub_download(repo_id='${LLM_MODEL_REPO}', filename='${LLM_MODEL_FILE}', local_dir='/app/models')"
+
+# Modelos de embeddings extra seleccionables por entrenamiento (opción `embedding_model`).
+# Mantener en sincronía con el Dockerfile de CPU, `xeye.training.embedding-models` del
+# backend y la imagen del search-service.
+ARG EXTRA_EMBEDDING_MODELS="paraphrase-multilingual-mpnet-base-v2"
+RUN for m in ${EXTRA_EMBEDDING_MODELS}; do \
+        python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('$m')"; \
+    done
+
+COPY app ./app
+
+CMD ["python", "-m", "app.entrypoints.runpod_handler"]

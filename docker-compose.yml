@@ -1,0 +1,64 @@
+# Este compose existe para CONSTRUIR la imagen y lanzar un entrenamiento a mano. No hay
+# servicio de larga vida: el backend arranca un contenedor por entrenamiento (`docker run`)
+# y el contenedor termina al entregar el callback.
+#
+#   docker compose build                     # imagen CPU  -> xeye-training-service:latest
+#   docker compose --profile gpu build       # imagen CUDA -> xeye-training-service:latest
+#   docker compose run --rm -e TRAINING_DATA_PATH=/data/input/job.json training
+#
+# GPU: solo la imagen del perfil `gpu` lleva torch CUDA + llama.cpp CUDA. Construye ESA si
+# quieres que los entrenamientos locales usen la GPU (el launcher docker del backend pasa
+# `--gpus` y cae a CPU si el daemon no puede proporcionarla).
+#
+# El JSON del job debe estar en ./input (montado solo lectura en /data/input) — el mismo
+# directorio en el que escribe el backend con TRAINING_INPUT_DIR.
+services:
+  training:
+    build:
+      context: .
+      args:
+        INCLUDE_LLM: ${INCLUDE_LLM:-true}
+        EMBEDDING_MODEL: ${EMBEDDING_MODEL:-paraphrase-multilingual-MiniLM-L12-v2}
+    image: xeye-training-service:latest
+    environment: &worker-env
+      ENRICHER: ${ENRICHER:-local}
+      STRATEGY: ${STRATEGY:-default}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-paraphrase-multilingual-MiniLM-L12-v2}
+      ENRICH_MAX_ELEMENTS: ${ENRICH_MAX_ELEMENTS:-0}
+      QUERY_VARIANT_WEIGHT: ${QUERY_VARIANT_WEIGHT:-0.35}
+      LLM_THREADS: ${LLM_THREADS:-0}
+      LLM_GPU_LAYERS: ${LLM_GPU_LAYERS:--1}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      WEBHOOK_SECRET: ${WEBHOOK_SECRET:-dev-webhook-secret}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    volumes:
+      - ./input:/data/input:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - xeye-network
+
+  # Mismo nombre de imagen a propósito: construye esta y el proveedor `docker` del backend la usa.
+  training-gpu:
+    profiles: ["gpu"]
+    build:
+      context: .
+      dockerfile: Dockerfile.gpu
+      args:
+        EMBEDDING_MODEL: ${EMBEDDING_MODEL:-paraphrase-multilingual-MiniLM-L12-v2}
+    image: xeye-training-service:latest
+    command: ["python", "-m", "app.entrypoints.cli"]
+    environment: *worker-env
+    gpus: all
+    volumes:
+      - ./input:/data/input:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - xeye-network
+
+networks:
+  xeye-network:
+    external: true
+    name: xeye-network

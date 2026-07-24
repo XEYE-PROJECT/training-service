@@ -1,0 +1,3 @@
+# Only for the images that bake the local LLM (ENRICHER=local): CPU and GPU builds.
+# The GPU Dockerfile installs a CUDA wheel instead of building this from source.
+llama-cpp-python==0.3.5
