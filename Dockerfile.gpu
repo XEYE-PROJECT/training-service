@@ -23,8 +23,10 @@ RUN pip install torch --index-url https://download.pytorch.org/whl/cu121
 
 # Wheel CUDA precompilada: compilar llama-cpp-python con nvcc aquí exigiría la imagen base
 # `devel` y mucha RAM/disco sin beneficio alguno.
+# 0.3.4 y no 0.3.5: el índice cu121 salta de 0.3.4 a 0.3.12 — con ==0.3.5 pip no encuentra
+# wheel, cae al sdist de PyPI e intenta compilar (falla en esta imagen runtime, sin nvcc).
 RUN pip install --extra-index-url https://abetlen.github.io/llama-cpp-python/whl/cu121 \
-        "llama-cpp-python==0.3.5"
+        "llama-cpp-python==0.3.4"
 
 COPY requirements.txt ./
 RUN pip install -r requirements.txt "runpod>=1.7,<2.0"
