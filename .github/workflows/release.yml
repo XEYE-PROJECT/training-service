@@ -1,0 +1,21 @@
+name: Release para RunPod
+
+# RunPod (integración GitHub) NO reconstruye con cada push: solo cuando se publica una
+# Release. Este workflow crea una release automática en cada push a master, de modo que
+# "push a master" == "nueva versión desplegada en el endpoint".
+on:
+  push:
+    branches: [master]
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ github.run_number }}
+          name: v${{ github.run_number }}
+          target_commitish: ${{ github.sha }}
+          body: "Release automática para RunPod (commit ${{ github.sha }})"

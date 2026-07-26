@@ -42,7 +42,10 @@ RUN mkdir -p /app/models \
 # Modelos de embeddings extra seleccionables por entrenamiento (opción `embedding_model`).
 # Mantener en sincronía con el Dockerfile de CPU, `xeye.training.embedding-models` del
 # backend y la imagen del search-service.
-ARG EXTRA_EMBEDDING_MODELS="paraphrase-multilingual-mpnet-base-v2"
+# Default vacío: en prod solo se ofrece MiniLM (RAM del VPS) y RunPod construye esta
+# imagen desde GitHub sin posibilidad de pasar build-args — el default ES la config de prod.
+# Además mpnet (~1.1 GB) acercaba el build al límite de 30 min de RunPod.
+ARG EXTRA_EMBEDDING_MODELS=""
 RUN for m in ${EXTRA_EMBEDDING_MODELS}; do \
         python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('$m')"; \
     done
