@@ -1,3 +1,4 @@
 # Only for the images that bake the local LLM (ENRICHER=local): CPU and GPU builds.
-# The GPU Dockerfile installs a CUDA wheel instead of building this from source.
+# The GPU Dockerfile compiles its own CUDA wheel (0.3.34) in a build stage instead of
+# using this pin — keep behaviour in sync if either version changes.
 llama-cpp-python==0.3.5

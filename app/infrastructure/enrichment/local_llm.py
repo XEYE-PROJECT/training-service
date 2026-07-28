@@ -49,22 +49,33 @@ class LocalLlmEnricher:
         if self._llm is None:
             if not self._path.is_file():
                 raise FileNotFoundError(f"LLM model not found at {self._path}")
+            import llama_cpp
             from llama_cpp import Llama
 
             # -1 = descargar todas las capas a la GPU. Es el valor por defecto y es seguro:
             # un llama.cpp compilado sin CUDA lo ignora y corre en CPU. Que la GPU se use de
             # verdad depende de la imagen (Dockerfile.gpu) y de que el contenedor reciba `--gpus`.
-            logger.info("Loading local LLM %s (n_gpu_layers=%d, cuda=%s)",
-                        self._path, self._gpu_layers, _cuda_available())
+            supports_offload = bool(llama_cpp.llama_supports_gpu_offload())
+            logger.info("Loading local LLM %s (n_gpu_layers=%d, cuda=%s, gpu_offload_support=%s)",
+                        self._path, self._gpu_layers, _cuda_available(), supports_offload)
+            if self._gpu_layers != 0 and not supports_offload:
+                logger.warning(
+                    "llama-cpp-python compilado SIN offload a GPU: el enriquecimiento correrá "
+                    "en CPU (~8 s/elemento). Revisa el wheel instalado en la imagen (Dockerfile.gpu)."
+                )
             kwargs = {
                 "model_path": str(self._path),
                 "n_ctx": self._context_size,
                 "n_gpu_layers": self._gpu_layers,
-                "verbose": False,
+                # verbose durante la carga: llama.cpp imprime "offloaded N/M layers to GPU",
+                # la única prueba fiable de que el offload ocurre (supports_offload puede ser
+                # True y aun así no haber kernels para la GPU asignada).
+                "verbose": True,
             }
             if self._threads:
                 kwargs["n_threads"] = self._threads
             self._llm = Llama(**kwargs)
+            self._llm.verbose = False  # silenciar los timings por petición; la carga ya quedó logueada
         return self._llm
 
 
