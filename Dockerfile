@@ -1,8 +1,7 @@
 # Imagen one-shot de CPU: un contenedor = un entrenamiento.
 #
-# Es la imagen que el backend lanza en local (proveedor `docker`) y la misma que ejecutarían
-# AWS Batch / ECS RunTask en la nube: solo corren el CMD por defecto con
-# TRAINING_JOB/TRAINING_DATA_PATH en el entorno.
+# Es la imagen que el backend lanza en local (proveedor `docker`): corre el CMD por
+# defecto con TRAINING_JOB/TRAINING_DATA_PATH en el entorno.
 #
 # INCLUDE_LLM=true hornea el modelo cuantizado (ENRICHER=local funciona sin red, ~2 GB más);
 # con --build-arg INCLUDE_LLM=false sale una imagen ligera para Groq/Gemini o sin LLM.

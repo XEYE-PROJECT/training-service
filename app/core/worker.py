@@ -1,7 +1,7 @@
 """Raíz de composición + la función que llama todo entrypoint.
 
 Los objetos pesados (modelo de embeddings, LLM) se construyen una vez por *proceso*: gratis
-para el contenedor one-shot, y en Lambda/RunPod el segundo job de un worker caliente se
+para el contenedor one-shot, y en RunPod el segundo job de un worker caliente se
 ahorra la carga del modelo por completo.
 """
 
@@ -35,7 +35,7 @@ class Worker:
 
         Nunca lanza: un fallo se reporta al backend (estado ``failed``) y se devuelve como
         ``{"status": "error", ...}`` — una excepción que escapara de aquí dejaría el
-        entrenamiento clavado en ``initialized`` en los reintentos de RunPod/Lambda.
+        entrenamiento clavado en ``initialized`` en los reintentos de RunPod.
         """
         reporter = WebhookReporter(
             callback_url=job.callback_url,
@@ -79,7 +79,7 @@ class Worker:
     def _embedder_for(self, job: TrainingJob) -> Embedder:
         """La opción ``embedding_model`` del job elige el modelo; por defecto, el de settings.
 
-        Se cachea por nombre para que un worker caliente de Lambda/RunPod que alterna
+        Se cachea por nombre para que un worker caliente de RunPod que alterna
         modelos no los recargue en cada job.
         """
         name = str(job.option("embedding_model") or "").strip()

@@ -10,7 +10,15 @@ import pytest
 from app.application.run_training import RunTraining, completion_payload, compute_cost
 from app.domain.models import ElementInput, Enrichment
 from app.domain.wire import decode_matrix
-from tests.conftest import DIM, FakeEmbedder, FakeEnricher, FakeReporter, make_job, make_settings
+from tests.conftest import (
+    DIM,
+    FakeBatchEnricher,
+    FakeEmbedder,
+    FakeEnricher,
+    FakeReporter,
+    make_job,
+    make_settings,
+)
 
 
 def run(job, enricher=None, settings=None, embedder=None):
@@ -95,6 +103,24 @@ def test_enrich_budget_caps_llm_calls_and_still_embeds_everything():
 
     assert len(enricher.seen) == 2
     assert decode_matrix(result.embeddings_b64).shape == (5, DIM)
+
+
+def test_a_batch_capable_enricher_receives_all_pending_elements_at_once():
+    # Los remotos (groq/gemini) exponen enrich_many; el paso debe preferirlo al bucle
+    # elemento a elemento y respetar caché y presupuesto igualmente.
+    cached = Enrichment(summary=["ya descrito"], queries=["consulta cacheada"], model="old-llm")
+    job = make_job([
+        ElementInput(id=1, text="martillo", generated_description=cached.to_json()),
+        ElementInput(id=2, text="destornillador"),
+        ElementInput(id=3, text="sierra"),
+    ])
+    enricher = FakeBatchEnricher()
+    result, _, _ = run(job, enricher=enricher)
+
+    assert enricher.batches == [[2, 3]]  # una sola llamada, sin el cacheado
+    assert result.enriched_count == 2
+    assert result.cached_count == 1
+    assert set(result.generated_descriptions) == {2, 3}
 
 
 def test_a_failing_element_does_not_sink_the_training():

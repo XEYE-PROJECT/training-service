@@ -1,8 +1,8 @@
 """Parseo del payload de entrada del job.
 
-Los tres entrypoints reciben el *mismo* objeto JSON (lo construye una vez el
-``TrainingLaunchCommand`` del backend): el contenedor one-shot lo lee de fichero, Lambda lo
-recibe como evento y RunPod en ``event["input"]``. El parseo vive aquí para que sigan
+Los dos entrypoints reciben el *mismo* objeto JSON (lo construye una vez el
+``TrainingLaunchCommand`` del backend): el contenedor one-shot lo lee de fichero y RunPod
+lo recibe en ``event["input"]``. El parseo vive aquí para que sigan
 siendo adaptadores de 40 líneas.
 """
 

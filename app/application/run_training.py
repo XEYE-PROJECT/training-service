@@ -1,6 +1,6 @@
 """Caso de uso: ejecutar un entrenamiento de principio a fin.
 
-El mismo código para todos los entrypoints (contenedor one-shot, Lambda, RunPod): construye
+El mismo código para todos los entrypoints (contenedor one-shot, RunPod): construye
 el pipeline de la estrategia del job, lo ejecuta y entrega el resultado al reporter — lo
 *único* que habla con el backend.
 """

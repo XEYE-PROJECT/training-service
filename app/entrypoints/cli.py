@@ -1,7 +1,7 @@
 """Entrypoint one-shot: un contenedor = un entrenamiento. CMD por defecto de la imagen.
 
-Lo usa el proveedor ``docker`` del backend en local y, sin cambios, AWS Batch / ECS RunTask
-en la nube. El job llega como JSON por, en orden de preferencia: la env ``TRAINING_JOB``
+Lo usa el proveedor ``docker`` del backend en local. El job llega como JSON por, en orden
+de preferencia: la env ``TRAINING_JOB``
 (el propio JSON), la env ``TRAINING_DATA_PATH`` (ruta a un fichero, normalmente un volumen
 montado) o stdin. Código de salida 0 = el backend confirmó el callback ``completed``.
 """

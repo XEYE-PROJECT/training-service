@@ -1,5 +1,5 @@
 """Configuración. Cada ajuste es una variable de entorno: el contenedor se configura igual
-lo arranque ``docker run``, Lambda o RunPod."""
+lo arranque ``docker run`` o RunPod."""
 
 from __future__ import annotations
 
@@ -36,6 +36,20 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
     gemini_model: str = "gemini-2.0-flash"
     llm_api_timeout_seconds: float = 60.0
+    #: Peticiones simultáneas contra el LLM remoto (groq/gemini). 1 = secuencial.
+    llm_concurrency: int = 8
+    #: Reintentos por petición ante 429/5xx/errores de red, con backoff exponencial.
+    llm_retry_attempts: int = 3
+    llm_retry_backoff_seconds: float = 2.0
+    #: A partir de cuántos elementos pendientes usar la Batch API del proveedor (Gemini:
+    #: 50% del precio estándar). 0 = nunca.
+    llm_batch_threshold: int = 500
+    #: Peticiones por job de batch: trocea listas grandes para no pasar el límite inline
+    #: de ~20 MB de Gemini (10.000 elementos = 5 jobs con el valor por defecto).
+    llm_batch_chunk_size: int = 2000
+    llm_batch_poll_seconds: float = 15.0
+    #: Espera máxima a la Batch API antes de rematar lo que falte con peticiones normales.
+    llm_batch_wait_minutes: float = 60.0
 
     # --- Callback al backend --------------------------------------------------------
     #: Respaldo cuando el job no trae secreto (el launcher normalmente envía uno).

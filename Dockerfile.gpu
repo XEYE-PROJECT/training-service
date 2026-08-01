@@ -1,6 +1,6 @@
-# Imagen GPU: RunPod Serverless (CMD por defecto) y AWS Batch en EC2 con GPU (sobrescribiendo
-# el CMD con `python -m app.entrypoints.cli`). Es la imagen para ENRICHER=local: la GPU baja
-# el paso LLM de ~7 s/elemento a bastante menos de un segundo.
+# Imagen GPU: RunPod Serverless (CMD por defecto) y el proveedor `docker` del backend en
+# local (que sobrescribe el CMD con `python -m app.entrypoints.cli`). Es la imagen para
+# ENRICHER=local: la GPU baja el paso LLM de ~7 s/elemento a bastante menos de un segundo.
 
 # --- build stage: compila llama-cpp-python con CUDA -----------------------------------
 # El wheel precompilado cu121 de abetlen no trae kernels (ni PTX) para GPUs más nuevas

@@ -5,8 +5,8 @@ Servicio de entrenamiento de listas, reescrito desde cero (sustituye a
 contenedor** que arranca, entrena la lista, envía el resultado al webhook del backend y
 muere.
 
-El mismo código corre en local (`docker run`), en **AWS Lambda**, en **RunPod Serverless** y
-en **AWS Batch / ECS**. Solo cambia el *entrypoint*, que es un fichero de 40 líneas.
+El mismo código corre en local (`docker run`) y en **RunPod Serverless**. Solo cambia el
+*entrypoint*, que es un fichero de 40 líneas.
 
 ## Qué produce
 
@@ -70,7 +70,7 @@ app/
   domain/          # puro: modelos, composición de textos, formato de los embeddings
   application/     # puertos (Protocols), pipeline, pasos, estrategias, caso de uso
   infrastructure/  # sentence-transformers, enrichers (llama.cpp / Groq / Gemini), webhook
-  entrypoints/     # cli (one-shot) · lambda_handler · runpod_handler
+  entrypoints/     # cli (one-shot) · runpod_handler
   core/            # settings + composición (worker.py)
 ```
 
@@ -79,9 +79,30 @@ app/
 | Valor | Qué usa | Dónde encaja |
 |---|---|---|
 | `local` (por defecto) | llama.cpp + GGUF horneado en la imagen (Qwen2.5-3B Q4) | Local y **RunPod/GPU**. En CPU son ~7 s por elemento |
-| `groq` | API de Groq (OpenAI-compatible) | **AWS Lambda** y CPU: ~1 s por elemento, imagen pequeña |
-| `gemini` | API de Gemini | igual que Groq |
+| `groq` | API de Groq (OpenAI-compatible) | Despliegues solo-CPU: ~1 s por elemento, imagen pequeña |
+| `gemini` | API de Gemini | igual que Groq, y con **Batch API** para listas grandes |
 | `none` | ninguno | embeddings solo del texto + descripción; segundos |
+
+### Escala: concurrencia y Batch API
+
+El elemento-a-elemento secuencial no aguanta listas grandes (10.000 elementos a ~1 s
+serían ~3 h), así que los enrichers remotos trabajan en lotes (`enrich_many`):
+
+- **Concurrencia** (`LLM_CONCURRENCY`, por defecto 8): Groq y Gemini lanzan varias
+  peticiones a la vez, con reintentos y backoff exponencial ante 429/5xx
+  (`LLM_RETRY_ATTEMPTS`/`LLM_RETRY_BACKOFF_SECONDS`, respetan `Retry-After`). 10.000
+  elementos ≈ 20 min.
+- **Batch API de Gemini** (**50% del precio estándar**): a partir de
+  `LLM_BATCH_THRESHOLD` elementos pendientes (por defecto 500) el job entero va a
+  `:batchGenerateContent`, troceado en jobs de `LLM_BATCH_CHUNK_SIZE` (2.000, para no
+  pasar el límite inline de ~20 MB: 10.000 elementos = 5 jobs) y sondeado cada
+  `LLM_BATCH_POLL_SECONDS`. Si un job falla o no acaba en `LLM_BATCH_WAIT_MINUTES`
+  (60), *sus* elementos se rematan por el camino concurrente: el batch abarata, nunca
+  pierde un entrenamiento. Groq no usa su Batch API (es de ficheros, con ventana de
+  24 h-7 d); escala solo por concurrencia.
+- Durante un enriquecimiento largo el paso re-reporta `optimizing` cada 5 min para que
+  el sweeper de estancados del backend (`TRAINING_STALLED_AFTER_MINUTES`, 30 por
+  defecto) no dé por muerto el run.
 
 ## Dónde desplegarlo
 
@@ -89,11 +110,6 @@ app/
 |---|---|---|---|
 | **Local** | `Dockerfile` (CPU) o **`Dockerfile.gpu`** | `cli` | El backend con `TRAINING_PROVIDER=docker` hace `docker run --gpus all` por entrenamiento (ver "GPU en local") |
 | **RunPod Serverless** | `Dockerfile.gpu` | `runpod_handler` | **Recomendado con `ENRICHER=local`**: GPU, escala a cero, ~0,06-0,15 $ por job grande |
-| **AWS Lambda** | `Dockerfile.lambda` | `lambda_handler` | Sin GPU y **tope duro de 15 min** → úsalo con `ENRICHER=groq\|gemini\|none`. Con LLM local reventaría el límite hacia los 100-200 elementos |
-| **AWS Batch / ECS RunTask** | `Dockerfile` o `.gpu` | `cli` | Cero código: ejecutan el CMD por defecto con `TRAINING_DATA_PATH`/`TRAINING_JOB`. Es la vía si AWS es requisito duro y quieres LLM local (Batch sobre EC2 GPU) |
-
-El backend invoca Lambda de forma **asíncrona** (`InvocationType=Event`): nadie espera al
-entrenamiento, el resultado vuelve por el webhook igual que en los demás proveedores.
 
 ## GPU en local
 
@@ -152,7 +168,7 @@ docker run --rm --network xeye-network \
   -v "$PWD/input:/data/input:ro" xeye-training-service:latest
 ```
 
-Un job (lo genera el backend; los tres entrypoints leen el mismo objeto):
+Un job (lo genera el backend; los dos entrypoints leen el mismo objeto):
 
 ```json
 {
@@ -166,6 +182,6 @@ Un job (lo genera el backend; los tres entrypoints leen el mismo objeto):
 }
 ```
 
-Variables en `.env.example`. En el backend: `TRAINING_PROVIDER=docker|lambda|runpod`,
+Variables en `.env.example`. En el backend: `TRAINING_PROVIDER=docker|runpod`,
 `TRAINING_WEBHOOK_SECRET` = el `WEBHOOK_SECRET` de aquí, y `BACKEND_URL` con la URL que el
 **contenedor** usa para llamar al webhook (no `localhost`).

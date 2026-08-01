@@ -21,7 +21,11 @@ class Embedder(Protocol):
 
 
 class Enricher(Protocol):
-    """Genera el enriquecimiento LLM de un elemento. ``None`` = sin enriquecimiento disponible."""
+    """Genera el enriquecimiento LLM de un elemento. ``None`` = sin enriquecimiento disponible.
+
+    Los adaptadores remotos exponen además ``enrich_many(elements, list_context,
+    heartbeat=None) -> dict[id, Enrichment]``: ``EnrichStep`` lo detecta con ``hasattr``
+    y lo prefiere (peticiones concurrentes y, en Gemini, su Batch API)."""
 
     @property
     def model_name(self) -> str | None: ...

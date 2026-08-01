@@ -1,5 +1,5 @@
-"""Embeddings con sentence-transformers. Carga perezosa y reutilizada (Lambda/RunPod
-mantienen el proceso caliente entre jobs, lo que amortiza el ~1 s de carga del modelo)."""
+"""Embeddings con sentence-transformers. Carga perezosa y reutilizada (RunPod mantiene
+el proceso caliente entre jobs, lo que amortiza el ~1 s de carga del modelo)."""
 
 from __future__ import annotations
 

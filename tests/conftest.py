@@ -66,6 +66,25 @@ class FakeEnricher:
         )
 
 
+class FakeBatchEnricher(FakeEnricher):
+    """Como FakeEnricher pero con el camino por lotes: registra los lotes que recibe."""
+
+    def __init__(self, name: str = "fake-llm", fail_on: set[int] | None = None) -> None:
+        super().__init__(name, fail_on)
+        self.batches: list[list[int]] = []
+
+    def enrich_many(self, elements, list_context, heartbeat=None):
+        self.batches.append([e.id for e in elements])
+        results = {}
+        for element in elements:
+            try:
+                enrichment = self.enrich(element, list_context)
+            except RuntimeError:
+                continue
+            results[element.id] = enrichment
+        return results
+
+
 class FakeReporter:
     def __init__(self) -> None:
         self.phases: list[str] = []
