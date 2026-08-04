@@ -162,5 +162,6 @@ def test_completion_payload_matches_the_backend_contract():
     assert payload["status"] == "completed"
     assert payload["model"] and payload["embeddings_data"]
     assert set(payload["generated_descriptions"]) == {"1", "2"}  # ids como cadenas: claves de objeto JSON
+    assert payload["described_count"] == result.enriched_count + result.cached_count
     assert payload["time"]["total_seconds"] >= 0
     assert payload["cost"]["total"] == pytest.approx(10 / 3600 * 1.10, rel=1e-3)

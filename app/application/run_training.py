@@ -90,6 +90,7 @@ def completion_payload(job: TrainingJob, result: TrainingResult, cost: dict[str,
         "model": result.model,
         "element_ids": result.element_ids,
         "generated_descriptions": {str(k): v for k, v in result.generated_descriptions.items()},
+        "described_count": result.enriched_count + result.cached_count,
         "time": result.time,
         "cost": cost,
     }
