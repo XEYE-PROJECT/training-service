@@ -41,6 +41,15 @@ class Settings(BaseSettings):
     #: Reintentos por petición ante 429/5xx/errores de red, con backoff exponencial.
     llm_retry_attempts: int = 3
     llm_retry_backoff_seconds: float = 2.0
+    #: Peticiones/minuto máximas contra el proveedor, entre todos los hilos (0 = sin tope).
+    #: Ponlo por debajo del RPM del plan (Groq free ~30, Gemini free ~10-15) para no
+    #: llegar nunca al 429 en vez de reaccionar a él.
+    llm_requests_per_minute: int = 0
+    #: Pasadas extra al final sobre los elementos cuyo enriquecimiento falló (cuota
+    #: agotada, red...): nadie se queda sin descripción por un pico de 429s.
+    llm_retry_rounds: int = 2
+    #: Respiro antes de cada pasada extra, para que la cuota por minuto se recupere.
+    llm_retry_round_wait_seconds: float = 30.0
     #: A partir de cuántos elementos pendientes usar la Batch API del proveedor (Gemini:
     #: 50% del precio estándar). 0 = nunca.
     llm_batch_threshold: int = 500

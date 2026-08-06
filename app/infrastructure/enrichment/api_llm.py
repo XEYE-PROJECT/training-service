@@ -9,6 +9,12 @@ así que los remotos enriquecen en lotes:
 
 - **Concurrencia** (``LLM_CONCURRENCY``): ambos proveedores lanzan varias peticiones a la
   vez, con reintentos y backoff ante 429/5xx — a 8 hilos, 10.000 elementos caben en ~20 min.
+- **Límites del proveedor**: un rate limiter compartido entre los hilos mantiene el ritmo
+  bajo ``LLM_REQUESTS_PER_MINUTE`` (0 = sin tope) para no llegar al 429; si aun así llega
+  uno, la pausa que pide el proveedor (``Retry-After`` o el ``RetryInfo`` de Gemini) frena a
+  *todos* los hilos, no solo al que lo recibió. Y los elementos que agoten sus reintentos se
+  reintentan en pasadas de rescate (``LLM_RETRY_ROUNDS``) tras un respiro
+  (``LLM_RETRY_ROUND_WAIT_SECONDS``): un pico de cuota retrasa descripciones, no las pierde.
 - **Batch API de Gemini** (``LLM_BATCH_THRESHOLD``): a partir de ese tamaño el job entero se
   envía a ``:batchGenerateContent`` (50% del precio estándar), troceado en jobs de
   ``LLM_BATCH_CHUNK_SIZE`` para respetar el límite inline de ~20 MB, y se sondea hasta que
@@ -20,6 +26,7 @@ así que los remotos enriquecen en lotes:
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Callable
@@ -41,8 +48,37 @@ GEMINI_POLL_URL = "https://generativelanguage.googleapis.com/v1beta/{name}"
 
 _RETRIABLE_STATUSES = {429, 500, 502, 503, 504}
 _BATCH_BAD_STATES = ("FAILED", "CANCELLED", "EXPIRED")
+#: Tope a lo que estamos dispuestos a esperar por petición aunque el proveedor pida más
+#: (una cuota diaria agotada puede pedir horas: eso ya no se arregla esperando).
+_MAX_RETRY_DELAY_SECONDS = 300.0
 
 Heartbeat = Callable[[], None]
+
+
+class _RateLimiter:
+    """Cadencia compartida entre los hilos de un mismo enricher.
+
+    Dos frenos: un intervalo mínimo entre peticiones (``LLM_REQUESTS_PER_MINUTE``, para no
+    llegar al límite del proveedor) y una pausa global que activa el hilo que reciba un 429
+    (para que el resto no siga quemando cuota — y reintentos — mientras dura)."""
+
+    def __init__(self, requests_per_minute: int) -> None:
+        self._interval = 60.0 / requests_per_minute if requests_per_minute > 0 else 0.0
+        self._lock = threading.Lock()
+        self._next_slot = 0.0
+        self._pause_until = 0.0
+
+    def acquire(self) -> None:
+        with self._lock:
+            start = max(time.monotonic(), self._next_slot, self._pause_until)
+            self._next_slot = start + self._interval
+        delay = start - time.monotonic()
+        if delay > 0:
+            time.sleep(delay)
+
+    def pause(self, seconds: float) -> None:
+        with self._lock:
+            self._pause_until = max(self._pause_until, time.monotonic() + seconds)
 
 
 class _RemoteEnricher:
@@ -51,6 +87,7 @@ class _RemoteEnricher:
     def __init__(self, settings: Settings, headers: dict[str, str]) -> None:
         self._settings = settings
         self._client = httpx.Client(timeout=settings.llm_api_timeout_seconds, headers=headers)
+        self._limiter = _RateLimiter(settings.llm_requests_per_minute)
 
     def enrich(self, element: ElementInput, list_context: ListInput) -> Enrichment | None:
         raise NotImplementedError
@@ -61,31 +98,67 @@ class _RemoteEnricher:
         list_context: ListInput,
         heartbeat: Heartbeat | None = None,
     ) -> dict[int, Enrichment]:
-        """Enriquece en paralelo. Un elemento fallido se omite; nunca tumba a los demás."""
-        workers = max(1, self._settings.llm_concurrency)
+        """Enriquece en paralelo. Un elemento fallido nunca tumba a los demás: se reintenta
+        en pasadas de rescate tras un respiro y solo si sigue fallando se queda sin descripción."""
         results: dict[int, Enrichment] = {}
+        pending = list(elements)
+        rounds = 1 + max(0, self._settings.llm_retry_rounds)
+        for round_no in range(1, rounds + 1):
+            if not pending:
+                break
+            if round_no > 1:
+                logger.warning(
+                    "Retrying %d element(s) whose enrichment failed (round %d/%d)",
+                    len(pending), round_no, rounds,
+                )
+                _sleep_with_heartbeat(self._settings.llm_retry_round_wait_seconds, heartbeat)
+            pending = self._enrich_round(pending, list_context, results, heartbeat)
+        if pending:
+            logger.warning(
+                "%d element(s) still without enrichment after %d round(s); "
+                "they keep their raw text this run",
+                len(pending), rounds,
+            )
+        return results
 
-        def one(element: ElementInput) -> tuple[int, Enrichment | None]:
+    def _enrich_round(
+        self,
+        elements: list[ElementInput],
+        list_context: ListInput,
+        results: dict[int, Enrichment],
+        heartbeat: Heartbeat | None,
+    ) -> list[ElementInput]:
+        """Una pasada concurrente; devuelve los elementos cuya petición falló (candidatos
+        a la siguiente pasada). Un parseo vacío no es fallo: reintentarlo no lo cambia."""
+        workers = max(1, self._settings.llm_concurrency)
+        failed: list[ElementInput] = []
+
+        def one(element: ElementInput) -> tuple[ElementInput, Enrichment | None, bool]:
             try:
-                return element.id, self.enrich(element, list_context)
+                return element, self.enrich(element, list_context), False
             except Exception:
                 logger.exception("Enrichment failed for element %d", element.id)
-                return element.id, None
+                return element, None, True
 
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            for done, (element_id, enrichment) in enumerate(pool.map(one, elements), start=1):
-                if enrichment is not None and not enrichment.is_empty():
-                    results[element_id] = enrichment
+            for done, (element, enrichment, error) in enumerate(pool.map(one, elements), start=1):
+                if error:
+                    failed.append(element)
+                elif enrichment is not None and not enrichment.is_empty():
+                    results[element.id] = enrichment
                 if heartbeat:
                     heartbeat()
                 if done % 100 == 0:
                     logger.info("Enriched %d/%d", done, len(elements))
-        return results
+        return failed
 
     def _post_with_retry(self, url: str, payload: dict[str, Any]) -> httpx.Response:
-        """POST con reintentos ante 429/5xx y errores de red; respeta ``Retry-After``."""
+        """POST con reintentos ante 429/5xx y errores de red. Respeta lo que pida esperar
+        el proveedor (``Retry-After`` o el ``RetryInfo`` de Gemini) y ante un 429 pausa
+        también al resto de hilos vía el rate limiter."""
         attempts = max(1, self._settings.llm_retry_attempts)
         for attempt in range(1, attempts + 1):
+            self._limiter.acquire()
             response: httpx.Response | None = None
             try:
                 response = self._client.post(url, json=payload)
@@ -99,17 +172,18 @@ class _RemoteEnricher:
             except httpx.HTTPError:
                 if attempt == attempts:
                     raise
-            time.sleep(self._retry_delay(attempt, response))
+            delay = self._retry_delay(attempt, response)
+            if response is not None and response.status_code == 429:
+                self._limiter.pause(delay)
+            time.sleep(delay)
         raise AssertionError("unreachable")
 
     def _retry_delay(self, attempt: int, response: httpx.Response | None) -> float:
         delay = self._settings.llm_retry_backoff_seconds * (2 ** (attempt - 1))
-        if response is not None:
-            try:
-                delay = max(delay, float(response.headers.get("retry-after", "")))
-            except ValueError:
-                pass
-        return delay
+        hint = _provider_retry_hint(response)
+        if hint is not None:
+            delay = max(delay, hint)
+        return min(delay, _MAX_RETRY_DELAY_SECONDS)
 
 
 class GroqEnricher(_RemoteEnricher):
@@ -309,3 +383,38 @@ class GeminiEnricher(_RemoteEnricher):
                     if found:
                         return found
         return []
+
+
+def _provider_retry_hint(response: httpx.Response | None) -> float | None:
+    """Cuántos segundos pide esperar el proveedor: la cabecera ``Retry-After`` (Groq) o,
+    en Gemini, el ``RetryInfo`` del cuerpo del error (``{"retryDelay": "58s"}``)."""
+    if response is None:
+        return None
+    header = response.headers.get("retry-after")
+    if header:
+        try:
+            return float(header)
+        except ValueError:
+            pass  # formato HTTP-date: probamos el cuerpo
+    try:
+        details = response.json().get("error", {}).get("details", [])
+    except Exception:
+        return None
+    for detail in details:
+        raw = str(detail.get("retryDelay", "")) if isinstance(detail, dict) else ""
+        if raw.endswith("s"):
+            try:
+                return float(raw[:-1])
+            except ValueError:
+                continue
+    return None
+
+
+def _sleep_with_heartbeat(seconds: float, heartbeat: Heartbeat | None) -> None:
+    """Duerme a trocitos latiendo entre medias, para que una espera larga no haga que el
+    sweeper de estancados del backend dé por muerto el entrenamiento."""
+    deadline = time.monotonic() + max(0.0, seconds)
+    while (remaining := deadline - time.monotonic()) > 0:
+        time.sleep(min(5.0, remaining))
+        if heartbeat:
+            heartbeat()

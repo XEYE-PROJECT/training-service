@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import json
 import re
+import time
 
 import httpx
 
 from app.domain.models import ElementInput, ListInput
-from app.infrastructure.enrichment.api_llm import GeminiEnricher, GroqEnricher
+from app.infrastructure.enrichment.api_llm import GeminiEnricher, GroqEnricher, _RateLimiter
 from tests.conftest import make_settings
 
 LIST = ListInput(id=3, name="Herramientas", description="Catálogo de ferretería")
@@ -32,6 +33,7 @@ def gemini_settings(**overrides):
         gemini_api_key="k",
         llm_retry_attempts=2,
         llm_retry_backoff_seconds=0.0,
+        llm_retry_round_wait_seconds=0.0,
         llm_batch_poll_seconds=0.0,
         llm_concurrency=4,
     )
@@ -97,6 +99,72 @@ def test_retriable_statuses_are_retried():
 
     assert enricher.enrich(ElementInput(id=1, text="item 1"), LIST) is not None
     assert calls["n"] == 2
+
+
+# --- Límites del proveedor ----------------------------------------------------------
+
+
+def test_an_element_rate_limited_past_its_retries_is_rescued_in_a_later_round():
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        element_id = element_id_from_prompt(request)
+        if element_id == 2:
+            calls["n"] += 1
+            if calls["n"] == 1:  # el primer intento agota el único reintento por petición
+                return httpx.Response(429, headers={"retry-after": "0"})
+        content = enrichment_json(element_id)
+        return httpx.Response(200, json={"choices": [{"message": {"content": content}}]})
+
+    enricher = GroqEnricher(
+        gemini_settings(groq_api_key="k", llm_retry_attempts=1, llm_retry_rounds=1)
+    )
+    use_transport(enricher, handler)
+    results = enricher.enrich_many(make_elements(3), LIST)
+
+    assert set(results) == {1, 2, 3}  # la pasada de rescate lo recupera
+
+
+def test_an_element_that_keeps_failing_is_dropped_after_all_rounds():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if element_id_from_prompt(request) == 2:
+            return httpx.Response(429)
+        content = enrichment_json(element_id_from_prompt(request))
+        return httpx.Response(200, json={"choices": [{"message": {"content": content}}]})
+
+    enricher = GroqEnricher(
+        gemini_settings(groq_api_key="k", llm_retry_attempts=1, llm_retry_rounds=1)
+    )
+    use_transport(enricher, handler)
+    results = enricher.enrich_many(make_elements(3), LIST)
+
+    assert set(results) == {1, 3}
+
+
+def test_gemini_retry_info_in_the_error_body_is_honored():
+    response = httpx.Response(
+        429,
+        json={"error": {"details": [
+            {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "7s"}
+        ]}},
+    )
+    enricher = GeminiEnricher(gemini_settings())
+
+    assert enricher._retry_delay(attempt=1, response=response) == 7.0
+
+
+def test_the_rate_limiter_spaces_requests_and_pause_holds_everyone():
+    limiter = _RateLimiter(requests_per_minute=1200)  # 0,05 s entre peticiones
+    start = time.monotonic()
+    for _ in range(3):
+        limiter.acquire()
+    assert time.monotonic() - start >= 0.1
+
+    limiter = _RateLimiter(requests_per_minute=0)  # sin RPM, la pausa manda igualmente
+    limiter.pause(0.05)
+    start = time.monotonic()
+    limiter.acquire()
+    assert time.monotonic() - start >= 0.05
 
 
 # --- Gemini / Batch API -------------------------------------------------------------

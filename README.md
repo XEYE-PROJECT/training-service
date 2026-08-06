@@ -90,8 +90,18 @@ serían ~3 h), así que los enrichers remotos trabajan en lotes (`enrich_many`):
 
 - **Concurrencia** (`LLM_CONCURRENCY`, por defecto 8): Groq y Gemini lanzan varias
   peticiones a la vez, con reintentos y backoff exponencial ante 429/5xx
-  (`LLM_RETRY_ATTEMPTS`/`LLM_RETRY_BACKOFF_SECONDS`, respetan `Retry-After`). 10.000
-  elementos ≈ 20 min.
+  (`LLM_RETRY_ATTEMPTS`/`LLM_RETRY_BACKOFF_SECONDS`). 10.000 elementos ≈ 20 min.
+- **Límites del proveedor** (que un pico de cuota no deje elementos sin descripción):
+  - *Proactivo*: `LLM_REQUESTS_PER_MINUTE` (0 = sin tope) reparte un RPM máximo entre
+    todos los hilos. Ponlo por debajo del límite del plan (Groq free ~30, Gemini free
+    ~10-15) y el 429 no llega a producirse.
+  - *Reactivo*: ante un 429 se respeta lo que pida esperar el proveedor — la cabecera
+    `Retry-After` (Groq) o el `RetryInfo` del cuerpo del error (Gemini) — con tope de
+    5 min, y la pausa frena a **todos** los hilos, no solo al que recibió el 429.
+  - *Rescate*: los elementos que agoten sus reintentos se reintentan al final en
+    `LLM_RETRY_ROUNDS` pasadas extra (por defecto 2), cada una tras un respiro de
+    `LLM_RETRY_ROUND_WAIT_SECONDS` (30) para que la cuota por minuto se recupere. Solo
+    lo que siga fallando se queda con su texto en crudo hasta el siguiente entrenamiento.
 - **Batch API de Gemini** (**50% del precio estándar**): a partir de
   `LLM_BATCH_THRESHOLD` elementos pendientes (por defecto 500) el job entero va a
   `:batchGenerateContent`, troceado en jobs de `LLM_BATCH_CHUNK_SIZE` (2.000, para no
