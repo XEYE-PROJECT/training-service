@@ -53,4 +53,9 @@ RUN for m in ${EXTRA_EMBEDDING_MODELS}; do \
 
 COPY app ./app
 
+# Commit desplegado, para etiquetar los eventos de Sentry (RunPod construye sin build-args:
+# ahí queda "unknown"; se puede fijar SENTRY_RELEASE en las variables del endpoint).
+ARG GIT_SHA=unknown
+ENV SENTRY_RELEASE=${GIT_SHA}
+
 CMD ["python", "-m", "app.entrypoints.cli"]

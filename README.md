@@ -184,7 +184,6 @@ Un job (lo genera el backend; los dos entrypoints leen el mismo objeto):
 {
   "training_id": 1, "list_id": 5, "user_id": 1,
   "callback_url": "http://xeye-java-backend:8000/webhooks/training-update",
-  "webhook_secret": "…",
   "list": {"id": 5, "name": "Ferretería", "description": "Catálogo"},
   "elements": [{"id": 1, "text": "martillo", "description": null,
                 "generated_description": null, "trained": false}],
@@ -195,3 +194,9 @@ Un job (lo genera el backend; los dos entrypoints leen el mismo objeto):
 Variables en `.env.example`. En el backend: `TRAINING_PROVIDER=docker|runpod`,
 `TRAINING_WEBHOOK_SECRET` = el `WEBHOOK_SECRET` de aquí, y `BACKEND_URL` con la URL que el
 **contenedor** usa para llamar al webhook (no `localhost`).
+
+**Secretos.** `WEBHOOK_SECRET` llega siempre por el entorno (el provider `docker` lo pasa con
+`-e`; en RunPod es una variable del endpoint): el backend no lo escribe en el job, así el
+JSON en disco o almacenado por RunPod no contiene credenciales. `SENTRY_DSN` (opcional)
+activa el error tracking; los fallos de un entrenamiento se envían antes de que el contenedor
+termine.

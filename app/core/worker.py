@@ -15,6 +15,7 @@ from typing import Any
 from app.application.ports import Embedder, Enricher
 from app.application.run_training import RunTraining, completion_payload, compute_cost
 from app.core.config import Settings, get_settings
+from app.core.sentry import capture_exception
 from app.domain.models import TrainingJob
 from app.infrastructure.embedding.sentence_transformer_embedder import SentenceTransformerEmbedder
 from app.infrastructure.enrichment.factory import build_enricher
@@ -52,6 +53,7 @@ class Worker:
             result = use_case.execute(job, reporter=reporter)
         except Exception as exc:
             logger.exception("Training %d failed", job.training_id)
+            capture_exception(exc)  # la excepción no escapa (se reporta `failed`): Sentry la ve aquí
             reporter.failed(str(exc))
             return {"status": "error", "training_id": job.training_id, "error": str(exc)}
 

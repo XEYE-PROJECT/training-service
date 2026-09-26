@@ -61,7 +61,8 @@ class Settings(BaseSettings):
     llm_batch_wait_minutes: float = 60.0
 
     # --- Callback al backend --------------------------------------------------------
-    #: Respaldo cuando el job no trae secreto (el launcher normalmente envía uno).
+    #: Secreto de la cabecera X-Webhook-Token (= TRAINING_WEBHOOK_SECRET del backend). Llega
+    #: por el entorno del contenedor / endpoint de RunPod: el backend ya no lo mete en el job.
     webhook_secret: str = ""
     callback_timeout_seconds: float = 60.0
     callback_retries: int = 3
@@ -69,6 +70,11 @@ class Settings(BaseSettings):
     # --- Coste / varios -------------------------------------------------------------
     compute_price_per_hour: float = 0.0  # se reporta como coste del entrenamiento
     log_level: str = "INFO"
+
+    # --- Error tracking (Sentry) — vacío = desactivado -------------------------------
+    sentry_dsn: str = ""
+    sentry_environment: str = "local"
+    sentry_release: str = ""  # commit desplegado (SENTRY_RELEASE, lo fija el Dockerfile)
 
 
 @lru_cache(maxsize=1)

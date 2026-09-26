@@ -15,6 +15,8 @@ import sys
 
 from app.core.config import get_settings
 from app.core.logging import configure_logging
+from app.core.sentry import flush as flush_sentry
+from app.core.sentry import init_sentry
 from app.core.worker import build_worker
 from app.infrastructure.job_loader import InvalidJobError, load_job_file, parse_job
 
@@ -41,6 +43,7 @@ def _read_payload() -> dict:
 def main() -> int:
     settings = get_settings()
     configure_logging(settings.log_level)
+    init_sentry(settings)
     try:
         job = parse_job(_read_payload())
     except (InvalidJobError, ValueError) as exc:
@@ -49,7 +52,10 @@ def main() -> int:
 
     logger.info("Training %d for list %d (%d elements, enricher=%s)",
                 job.training_id, job.list_id, len(job.elements), settings.enricher)
-    outcome = build_worker(settings).run(job)
+    try:
+        outcome = build_worker(settings).run(job)
+    finally:
+        flush_sentry()  # contenedor de un solo uso: los eventos deben salir antes de morir
     return 0 if outcome["status"] == "ok" else 1
 
 
