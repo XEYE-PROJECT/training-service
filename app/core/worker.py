@@ -38,14 +38,23 @@ class Worker:
         ``{"status": "error", ...}`` — una excepción que escapara de aquí dejaría el
         entrenamiento clavado en ``initialized`` en los reintentos de RunPod.
         """
+        secret = job.webhook_secret or self.settings.webhook_secret.get_secret_value() or None
         reporter = WebhookReporter(
             callback_url=job.callback_url,
             training_id=job.training_id,
             list_id=job.list_id,
-            secret=job.webhook_secret or self.settings.webhook_secret or None,
+            secret=secret,
             timeout_seconds=self.settings.callback_timeout_seconds,
             retries=self.settings.callback_retries,
         )
+        # Fail fast: un secreto ausente o de desarrollo haría 403 en el callback *después* de
+        # pagar todo el cómputo. Se reporta `failed` igualmente (si el 403 lo rechaza, el
+        # backend lo marcará estancado a los 30 min) y se sale sin entrenar.
+        problem = self.settings.webhook_secret_problem(job.callback_url, job.webhook_secret)
+        if problem:
+            logger.error("Training %d not started: %s", job.training_id, problem)
+            reporter.failed(problem)
+            return {"status": "error", "training_id": job.training_id, "error": problem}
         use_case = RunTraining(self.settings, self._embedder_for(job), self.enricher)
 
         started = time.monotonic()

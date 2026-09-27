@@ -4,8 +4,16 @@ lo arranque ``docker run`` o RunPod."""
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Literal
 
+from pydantic import SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+#: Valores de .env.example / compose de desarrollo: nunca válidos contra un backend https.
+INSECURE_WEBHOOK_SECRETS = frozenset({"dev-webhook-secret", "changeme", "change-me", "secret", "password"})
+MIN_WEBHOOK_SECRET_LENGTH = 32
+
+Enricher = Literal["none", "local", "groq", "gemini"]
 
 
 class Settings(BaseSettings):
@@ -22,8 +30,8 @@ class Settings(BaseSettings):
     query_variant_weight: float = 0.35
 
     # --- Enriquecimiento (LLM) ------------------------------------------------------
-    #: local | groq | gemini | none
-    enricher: str = "local"
+    #: local | groq | gemini | none (también off/vacío = none). Valor desconocido = no arranca.
+    enricher: Enricher = "local"
     enrich_max_elements: int = 0  # 0 = sin tope; un tope mantiene las ejecuciones solo-CPU en el timeout
     llm_model_path: str = "/app/models/qwen2.5-3b-instruct-q4_k_m.gguf"
     llm_context_size: int = 2048
@@ -31,9 +39,10 @@ class Settings(BaseSettings):
     llm_temperature: float = 0.3
     llm_threads: int = 0  # 0 = decide llama.cpp
     llm_gpu_layers: int = -1  # -1 = descargar todo a la GPU si la hay (los builds de CPU lo ignoran)
-    groq_api_key: str = ""
+    #: Secretos como SecretStr: no salen en repr()/logs; leer con .get_secret_value().
+    groq_api_key: SecretStr = SecretStr("")
     groq_model: str = "llama-3.3-70b-versatile"
-    gemini_api_key: str = ""
+    gemini_api_key: SecretStr = SecretStr("")
     gemini_model: str = "gemini-2.0-flash"
     llm_api_timeout_seconds: float = 60.0
     #: Peticiones simultáneas contra el LLM remoto (groq/gemini). 1 = secuencial.
@@ -63,7 +72,7 @@ class Settings(BaseSettings):
     # --- Callback al backend --------------------------------------------------------
     #: Secreto de la cabecera X-Webhook-Token (= TRAINING_WEBHOOK_SECRET del backend). Llega
     #: por el entorno del contenedor / endpoint de RunPod: el backend ya no lo mete en el job.
-    webhook_secret: str = ""
+    webhook_secret: SecretStr = SecretStr("")
     callback_timeout_seconds: float = 60.0
     callback_retries: int = 3
 
@@ -75,6 +84,48 @@ class Settings(BaseSettings):
     sentry_dsn: str = ""
     sentry_environment: str = "local"
     sentry_release: str = ""  # commit desplegado (SENTRY_RELEASE, lo fija el Dockerfile)
+
+    @field_validator("enricher", mode="before")
+    @classmethod
+    def _normalize_enricher(cls, value: object) -> object:
+        text = str(value or "").strip().lower()
+        return "none" if text in {"", "off", "none"} else text
+
+    @model_validator(mode="after")
+    def _fail_fast(self) -> "Settings":
+        """Lo que fallaría a mitad de un entrenamiento (tras pagar embeddings) falla al arrancar.
+
+        El secreto del webhook no se valida aquí porque depende del job (ver
+        ``Worker.check_webhook_secret``): la misma imagen sirve para local y RunPod.
+        """
+        problems: list[str] = []
+        if self.enricher == "groq" and not self.groq_api_key.get_secret_value().strip():
+            problems.append("ENRICHER=groq requires GROQ_API_KEY")
+        if self.enricher == "gemini" and not self.gemini_api_key.get_secret_value().strip():
+            problems.append("ENRICHER=gemini requires GEMINI_API_KEY")
+        if self.embedding_batch_size <= 0:
+            problems.append("EMBEDDING_BATCH_SIZE must be > 0")
+        if self.callback_retries < 1:
+            problems.append("CALLBACK_RETRIES must be >= 1 (the final callback must be retried)")
+        if problems:
+            raise ValueError("Unsafe configuration:\n - " + "\n - ".join(problems))
+        return self
+
+    def webhook_secret_problem(self, callback_url: str, job_secret: str | None = None) -> str | None:
+        """Motivo por el que el callback fallaría con 403, o ``None`` si el secreto vale.
+
+        Contra un backend ``https://`` (producción) se exige un secreto fuerte y distinto de los
+        de desarrollo; contra ``http://`` (backend local en la red docker) basta con que exista.
+        """
+        secret = (job_secret or self.webhook_secret.get_secret_value()).strip()
+        if not secret:
+            return "WEBHOOK_SECRET is not set: the backend would reject the callback with 403"
+        if callback_url.lower().startswith("https://"):
+            if secret.lower() in INSECURE_WEBHOOK_SECRETS:
+                return "WEBHOOK_SECRET is a known development value; a production backend rejects it"
+            if len(secret) < MIN_WEBHOOK_SECRET_LENGTH:
+                return f"WEBHOOK_SECRET must be at least {MIN_WEBHOOK_SECRET_LENGTH} characters against a production backend"
+        return None
 
 
 @lru_cache(maxsize=1)

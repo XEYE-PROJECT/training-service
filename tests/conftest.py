@@ -20,7 +20,8 @@ def make_settings(**overrides) -> Settings:
         query_variant_weight=0.35,
     )
     defaults.update(overrides)
-    return Settings(**defaults)
+    # _env_file=None: los tests no deben leer el .env real del desarrollador (claves, WEBHOOK_SECRET).
+    return Settings(_env_file=None, **defaults)
 
 
 class FakeEmbedder:

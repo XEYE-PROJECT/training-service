@@ -191,12 +191,17 @@ Un job (lo genera el backend; los dos entrypoints leen el mismo objeto):
 }
 ```
 
-Variables en `.env.example`. En el backend: `TRAINING_PROVIDER=docker|runpod`,
+Variables en `.env.example`; referencia completa con lo **obligatorio en producción** en
+[CONFIG.md](CONFIG.md). En el backend: `TRAINING_PROVIDER=docker|runpod`,
 `TRAINING_WEBHOOK_SECRET` = el `WEBHOOK_SECRET` de aquí, y `BACKEND_URL` con la URL que el
 **contenedor** usa para llamar al webhook (no `localhost`).
 
 **Secretos.** `WEBHOOK_SECRET` llega siempre por el entorno (el provider `docker` lo pasa con
 `-e`; en RunPod es una variable del endpoint): el backend no lo escribe en el job, así el
-JSON en disco o almacenado por RunPod no contiene credenciales. `SENTRY_DSN` (opcional)
+JSON en disco o almacenado por RunPod no contiene credenciales. **Fail fast:** `ENRICHER=groq|gemini`
+sin su API key, un `ENRICHER` desconocido o `CALLBACK_RETRIES=0` impiden arrancar; y un job cuyo
+callback es `https://` (backend de producción) con `WEBHOOK_SECRET` vacío, corto o de desarrollo
+se reporta `failed` **antes** de cargar modelos ni pagar cómputo (contra `http://`, un backend
+local, basta con que el secreto exista). Los secretos son `SecretStr`: no salen en logs ni en `repr`. `SENTRY_DSN` (opcional)
 activa el error tracking; los fallos de un entrenamiento se envían antes de que el contenedor
 termine.

@@ -190,10 +190,11 @@ class GroqEnricher(_RemoteEnricher):
     """En realidad vale cualquier endpoint de chat compatible con OpenAI: solo cambian URL base y clave."""
 
     def __init__(self, settings: Settings) -> None:
-        if not settings.groq_api_key:
+        api_key = settings.groq_api_key.get_secret_value()
+        if not api_key:
             raise ValueError("ENRICHER=groq requires GROQ_API_KEY")
         self._model = settings.groq_model
-        super().__init__(settings, headers={"Authorization": f"Bearer {settings.groq_api_key}"})
+        super().__init__(settings, headers={"Authorization": f"Bearer {api_key}"})
 
     @property
     def model_name(self) -> str:
@@ -218,10 +219,11 @@ class GroqEnricher(_RemoteEnricher):
 
 class GeminiEnricher(_RemoteEnricher):
     def __init__(self, settings: Settings) -> None:
-        if not settings.gemini_api_key:
+        api_key = settings.gemini_api_key.get_secret_value()
+        if not api_key:
             raise ValueError("ENRICHER=gemini requires GEMINI_API_KEY")
         self._model = settings.gemini_model
-        super().__init__(settings, headers={"x-goog-api-key": settings.gemini_api_key})
+        super().__init__(settings, headers={"x-goog-api-key": api_key})
 
     @property
     def model_name(self) -> str:
