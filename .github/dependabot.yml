@@ -1,0 +1,32 @@
+# Dependabot: PRs semanales (lunes) para las actions (fijadas por SHA), las dependencias Python
+# y las imágenes base de los dos Dockerfiles (fijadas por digest).
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    groups:
+      python-minor-patch:
+        update-types: ["minor", "patch"]
+    ignore:
+      # Cambian los embeddings / el LLM: se actualizan a mano y se re-evalúa (evaluation/ del search-service).
+      - dependency-name: torch
+      - dependency-name: sentence-transformers
+      - dependency-name: llama-cpp-python
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday

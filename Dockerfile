@@ -5,7 +5,8 @@
 #
 # INCLUDE_LLM=true hornea el modelo cuantizado (ENRICHER=local funciona sin red, ~2 GB más);
 # con --build-arg INCLUDE_LLM=false sale una imagen ligera para Groq/Gemini o sin LLM.
-FROM python:3.11-slim
+# Base fijada por digest (Dependabot abre PR cuando cambia): builds reproducibles.
+FROM python:3.11-slim@sha256:e41613d42d4891e4930f79523f93f81bbc7632584ec65e36ab055f41a800b41e
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \

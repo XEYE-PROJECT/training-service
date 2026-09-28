@@ -20,6 +20,10 @@ services:
         INCLUDE_LLM: ${INCLUDE_LLM:-true}
         EMBEDDING_MODEL: ${EMBEDDING_MODEL:-paraphrase-multilingual-MiniLM-L12-v2}
     image: xeye-training-service:latest
+    # Contenedor de un solo uso: nunca se reinicia (el backend lanza uno nuevo por training).
+    restart: "no"
+    # Tope de RAM del worker (LLM local Q4 ~3 GB + torch + embeddings); subir si hay OOM.
+    mem_limit: ${TRAINING_MEM_LIMIT:-8g}
     environment: &worker-env
       ENRICHER: ${ENRICHER:-local}
       STRATEGY: ${STRATEGY:-default}
