@@ -40,6 +40,7 @@ su forma y que el id sea el del job antes de entrenar; el HMAC lo verifica el ba
 | `ENRICH_MAX_ELEMENTS` | Tope de elementos enriquecidos por ejecución (0 = sin tope) | `0` | opcional | — |
 | `GROQ_API_KEY` 🔑 / `GROQ_MODEL` | Solo `groq` | vacío / `llama-3.3-70b-versatile` | si groq | clave obligatoria al arrancar |
 | `GEMINI_API_KEY` 🔑 / `GEMINI_MODEL` | Solo `gemini` | vacío / `gemini-2.0-flash` | si gemini | clave obligatoria al arrancar |
+| `GEMINI_THINKING_BUDGET` | Tokens de razonamiento por petición en los modelos pensantes (Gemini 2.5/3.x). `0` los desactiva: describir un elemento no lo necesita y, si no, el razonamiento agota `LLM_MAX_TOKENS` y la respuesta llega vacía. `-1` = no enviar `thinkingConfig` (modelos que no lo admiten, p. ej. `gemini-2.0-*`) | `0` | opcional | — |
 | `LLM_MAX_TOKENS` / `LLM_TEMPERATURE` | Tope de tokens de salida por petición y temperatura, para **todos** los proveedores | `384` / `0.3` | opcional | `LLM_MAX_TOKENS` > 0 |
 | `LLM_PRICE_PER_MILLION_INPUT_TOKENS` / `_OUTPUT_TOKENS` | Tarifa del proveedor (unidades monetarias por millón de tokens); 0 = solo se cuentan tokens | `0` / `0` | recomendado con groq/gemini | — |
 | `LLM_MAX_COST_PER_JOB` | Tope de gasto en LLM por entrenamiento (0 = sin tope). Alcanzado, no se lanza ninguna petición más; el webhook lo marca con `usage.llm_budget_exhausted` | `0` | recomendado | exige tarifas > 0 |

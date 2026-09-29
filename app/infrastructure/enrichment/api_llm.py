@@ -380,19 +380,26 @@ class GeminiEnricher(_RemoteEnricher):
     def _request_body(self, element: ElementInput, list_context: ListInput) -> dict[str, Any]:
         prompt = f"{SYSTEM_PROMPT}\n\n{build_user_prompt(element, list_context)}"
         max_tokens, temperature = self._generation_config()
+        generation_config: dict[str, Any] = {
+            "temperature": temperature,
+            "maxOutputTokens": max_tokens,
+            "responseMimeType": "application/json",
+        }
+        # Con los modelos pensantes el razonamiento cuenta contra maxOutputTokens: sin presupuesto
+        # explícito la respuesta llega truncada o vacía. -1 = el modelo no admite thinkingConfig.
+        if self._settings.gemini_thinking_budget >= 0:
+            generation_config["thinkingConfig"] = {"thinkingBudget": self._settings.gemini_thinking_budget}
         return {
             "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {
-                "temperature": temperature,
-                "maxOutputTokens": max_tokens,
-                "responseMimeType": "application/json",
-            },
+            "generationConfig": generation_config,
         }
 
     def _parse_generate_response(self, payload: dict[str, Any], meter: SpendMeter | None = None) -> Enrichment | None:
         if meter is not None:
             usage = payload.get("usageMetadata") or {}
-            meter.add(usage.get("promptTokenCount"), usage.get("candidatesTokenCount"))
+            # Los tokens de razonamiento se facturan como salida pero vienen aparte.
+            output_tokens = int(usage.get("candidatesTokenCount") or 0) + int(usage.get("thoughtsTokenCount") or 0)
+            meter.add(usage.get("promptTokenCount"), output_tokens)
         candidates = payload.get("candidates") or []
         if not candidates:
             return None

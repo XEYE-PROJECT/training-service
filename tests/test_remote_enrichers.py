@@ -147,6 +147,34 @@ def test_gemini_requests_carry_the_configured_output_cap_and_temperature_and_rep
     assert config["maxOutputTokens"] == 200 and config["temperature"] == 0.1
     assert meter.usage == meter.usage.__class__(300, 50, 1)
     assert meter.cost == 0.0003
+    # Por defecto el razonamiento va desactivado: si no, consume el tope entero y no hay respuesta.
+    assert config["thinkingConfig"] == {"thinkingBudget": 0}
+
+
+def test_gemini_thinking_budget_is_configurable_and_thought_tokens_count_as_output():
+    bodies: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.read()))
+        return httpx.Response(
+            200,
+            json={
+                **gemini_response_for(1),
+                "usageMetadata": {"promptTokenCount": 57, "candidatesTokenCount": 4, "thoughtsTokenCount": 365},
+            },
+        )
+
+    meter = SpendMeter()
+    enricher = GeminiEnricher(gemini_settings(gemini_thinking_budget=1024))
+    use_transport(enricher, handler)
+    assert enricher.enrich(ElementInput(id=1, text="item 1"), LIST, meter=meter) is not None
+    assert bodies[0]["generationConfig"]["thinkingConfig"] == {"thinkingBudget": 1024}
+    assert meter.usage.output_tokens == 369  # candidatos + razonamiento
+
+    enricher = GeminiEnricher(gemini_settings(gemini_thinking_budget=-1))
+    use_transport(enricher, handler)
+    assert enricher.enrich(ElementInput(id=1, text="item 1"), LIST) is not None
+    assert "thinkingConfig" not in bodies[1]["generationConfig"]  # modelos que no lo admiten
 
 
 def test_the_spending_cap_stops_new_requests_and_skips_rescue_rounds():

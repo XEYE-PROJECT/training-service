@@ -55,6 +55,11 @@ class Settings(BaseSettings):
     groq_model: str = "llama-3.3-70b-versatile"
     gemini_api_key: SecretStr = SecretStr("")
     gemini_model: str = "gemini-2.0-flash"
+    #: Modelos "pensantes" (Gemini 2.5/3.x): presupuesto de tokens de razonamiento por petición.
+    #: 0 (defecto) lo desactiva: describir un elemento no lo necesita y, si no, el razonamiento
+    #: consume LLM_MAX_TOKENS entero y la respuesta llega vacía (finishReason MAX_TOKENS).
+    #: -1 = no enviar thinkingConfig (obligatorio con modelos que no lo admiten, p. ej. gemini-2.0-*).
+    gemini_thinking_budget: int = 0
     llm_api_timeout_seconds: float = 60.0
     #: Peticiones simultáneas contra el LLM remoto (groq/gemini). 1 = secuencial.
     llm_concurrency: int = 8

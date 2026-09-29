@@ -6,6 +6,9 @@ crea el tag que publica la GitHub Release, que es lo que hace que RunPod reconst
 
 ## [Unreleased]
 
+### Corregido
+- Gemini 2.5/3.x: el razonamiento del modelo consumía `LLM_MAX_TOKENS` entero y las descripciones llegaban vacías (`finishReason=MAX_TOKENS`, 0 enriquecidos). Nuevo `GEMINI_THINKING_BUDGET` (0 por defecto) fija `thinkingConfig.thinkingBudget`; los tokens de razonamiento se suman al gasto de salida.
+
 ## [1.0.0] - 2026-09-29
 
 ### Añadido
