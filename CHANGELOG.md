@@ -6,6 +6,8 @@ crea el tag que publica la GitHub Release, que es lo que hace que RunPod reconst
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-09-29
+
 ### Añadido
 - Worker de entrenamiento reconstruido: un contenedor por training (docker en local, RunPod
   Serverless en producción), mismo job JSON y mismo webhook en ambos; embeddings con
