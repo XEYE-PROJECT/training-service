@@ -92,7 +92,7 @@ class Settings(BaseSettings):
         return "none" if text in {"", "off", "none"} else text
 
     @model_validator(mode="after")
-    def _fail_fast(self) -> "Settings":
+    def _fail_fast(self) -> Settings:
         """Lo que fallaría a mitad de un entrenamiento (tras pagar embeddings) falla al arrancar.
 
         El secreto del webhook no se valida aquí porque depende del job (ver
@@ -124,7 +124,10 @@ class Settings(BaseSettings):
             if secret.lower() in INSECURE_WEBHOOK_SECRETS:
                 return "WEBHOOK_SECRET is a known development value; a production backend rejects it"
             if len(secret) < MIN_WEBHOOK_SECRET_LENGTH:
-                return f"WEBHOOK_SECRET must be at least {MIN_WEBHOOK_SECRET_LENGTH} characters against a production backend"
+                return (
+                    f"WEBHOOK_SECRET must be at least {MIN_WEBHOOK_SECRET_LENGTH} characters "
+                    "against a production backend"
+                )
         return None
 
 

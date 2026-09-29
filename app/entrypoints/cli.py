@@ -50,8 +50,13 @@ def main() -> int:
         logger.error("Invalid job: %s", exc)
         return 2
 
-    logger.info("Training %d for list %d (%d elements, enricher=%s)",
-                job.training_id, job.list_id, len(job.elements), settings.enricher)
+    logger.info(
+        "Training %d for list %d (%d elements, enricher=%s)",
+        job.training_id,
+        job.list_id,
+        len(job.elements),
+        settings.enricher,
+    )
     try:
         outcome = build_worker(settings).run(job)
     finally:

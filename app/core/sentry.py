@@ -27,8 +27,9 @@ def init_sentry(settings: Settings) -> bool:
         send_default_pii=False,
     )
     _enabled = True
-    logger.info("Sentry enabled (environment=%s, release=%s)",
-                settings.sentry_environment, settings.sentry_release or "-")
+    logger.info(
+        "Sentry enabled (environment=%s, release=%s)", settings.sentry_environment, settings.sentry_release or "-"
+    )
     return True
 
 

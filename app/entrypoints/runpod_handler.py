@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-import runpod  # type: ignore[import-not-found]
+import runpod
 
 from app.core.config import get_settings
 from app.core.logging import configure_logging
@@ -35,8 +35,7 @@ def handler(event: dict[str, Any]) -> dict[str, Any]:
         logger.error("Invalid job: %s", exc)
         return {"status": "error", "error": str(exc)}
 
-    logger.info("RunPod: training %d for list %d (%d elements)",
-                job.training_id, job.list_id, len(job.elements))
+    logger.info("RunPod: training %d for list %d (%d elements)", job.training_id, job.list_id, len(job.elements))
     try:
         return _worker.run(job)
     finally:

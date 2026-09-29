@@ -57,14 +57,17 @@ class EmbedStep:
         matrix = _l2_normalize(matrix)
 
         vectors = np.zeros((len(ctx.elements), matrix.shape[1]), dtype=np.float32)
-        for i, (rows, weights) in enumerate(zip(rows_of, weights_of)):
+        for i, (rows, weights) in enumerate(zip(rows_of, weights_of, strict=True)):
             weighted = matrix[rows] * np.asarray(weights, dtype=np.float32)[:, None]
             vectors[i] = weighted.sum(axis=0)
         ctx.vectors = _l2_normalize(vectors)
 
         logger.info(
             "Embedded %d elements (%d texts) into %d dims with %s",
-            len(ctx.elements), len(texts), matrix.shape[1], ctx.embedder.model_name,
+            len(ctx.elements),
+            len(texts),
+            matrix.shape[1],
+            ctx.embedder.model_name,
         )
 
 

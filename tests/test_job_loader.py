@@ -14,8 +14,7 @@ BACKEND_PAYLOAD = {
     "webhook_secret": "s3cret",
     "list": {"id": 5, "name": "Museos", "description": "Museos de Baleares"},
     "elements": [
-        {"id": 2, "text": "Museo B", "description": None, "generated_description": None,
-         "trained": False},
+        {"id": 2, "text": "Museo B", "description": None, "generated_description": None, "trained": False},
         {"id": 1, "text": "Museo A", "description": "arte moderno", "trained": True},
     ],
     "options": [{"key": "train_all", "value": True}, {"key": "strategy", "value": "default"}],
@@ -39,11 +38,16 @@ def test_options_also_accept_a_plain_object():
 
 
 def test_elements_without_id_or_text_are_dropped():
-    job = parse_job({**BACKEND_PAYLOAD, "elements": [
-        {"id": 1, "text": "ok"},
-        {"id": None, "text": "sin id"},
-        {"id": 3, "text": "   "},
-    ]})
+    job = parse_job(
+        {
+            **BACKEND_PAYLOAD,
+            "elements": [
+                {"id": 1, "text": "ok"},
+                {"id": None, "text": "sin id"},
+                {"id": 3, "text": "   "},
+            ],
+        }
+    )
     assert [e.id for e in job.elements] == [1]
 
 

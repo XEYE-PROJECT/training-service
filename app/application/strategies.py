@@ -7,7 +7,7 @@ basta registrar una factoría con ``@register("nombre")``.
 
 from __future__ import annotations
 
-from typing import Callable
+from collections.abc import Callable
 
 from app.application.pipeline import Step, TrainingPipeline
 from app.application.steps.embed import EmbedStep

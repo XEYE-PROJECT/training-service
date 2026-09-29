@@ -8,6 +8,7 @@ elemento ASC y ``model`` con un nombre real (el search-service embebe las consul
 
 from __future__ import annotations
 
+import builtins
 import json
 from dataclasses import dataclass, field
 from typing import Any
@@ -57,7 +58,7 @@ class Enrichment:
         )
 
     @staticmethod
-    def from_json(raw: str | None) -> "Enrichment | None":
+    def from_json(raw: str | None) -> Enrichment | None:
         """Parsea un enriquecimiento cacheado. Devuelve None ante cualquier cosa no fiable."""
         if not raw or not raw.strip():
             return None
@@ -104,13 +105,15 @@ class TrainingJob:
     webhook_secret: str | None = None
     user_id: int | None = None
     list: ListInput = field(default_factory=lambda: ListInput(id=0))
-    elements: list[ElementInput] = field(default_factory=list)
+    # El campo `list` de arriba tapa al builtin en el cuerpo de la clase: sin `builtins.`,
+    # `default_factory=list` sería ese Field (TypeError al construir sin elementos).
+    elements: builtins.list[ElementInput] = field(default_factory=builtins.list)
     options: dict[str, Any] = field(default_factory=dict)
 
     def option(self, key: str, default: Any = None) -> Any:
         return self.options.get(key, default)
 
-    def sorted_elements(self) -> list[ElementInput]:
+    def sorted_elements(self) -> builtins.list[ElementInput]:
         """Elementos por id ASC — el orden de filas de la matriz de embeddings. Crítico."""
         return sorted(self.elements, key=lambda e: e.id)
 

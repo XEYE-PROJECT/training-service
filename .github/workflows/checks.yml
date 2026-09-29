@@ -1,0 +1,109 @@
+name: Checks
+
+# Workflow reutilizable (workflow_call): lo invocan ci.yml (push a master y pull requests) y
+# release.yml (tags vX.Y.Z). Cuatro jobs independientes: gitleaks, lint (ruff + mypy), tests
+# (pytest con torch CPU, sin CUDA) y escaneo de dependencias (Trivy). No despliega nada.
+#
+# Actions fijadas por SHA de commit (el tag es un comentario); Dependabot las actualiza.
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  # Ningún secreto llega al historial: gitleaks sobre todo el repo (binario oficial vía docker;
+  # la action de gitleaks exige licencia en organizaciones, el binario no).
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          fetch-depth: 0
+      - name: gitleaks
+        run: >
+          docker run --rm -v "$PWD:/repo"
+          -e GIT_CONFIG_COUNT=1 -e GIT_CONFIG_KEY_0=safe.directory -e GIT_CONFIG_VALUE_0=/repo
+          ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f git /repo --redact -v --exit-code 1
+
+  # ruff + mypy con las versiones pineadas en requirements-dev.txt (config en pyproject.toml).
+  # mypy solo necesita los paquetes que resuelve con tipos (pydantic, httpx, numpy, runpod):
+  # torch/sentence-transformers no traen stubs y se ignoran (ignore_missing_imports).
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - name: Install (ruff, mypy y lo que mypy resuelve con tipos)
+        run: |
+          pip install --quiet $(grep -hE '^(ruff|mypy)==' requirements-dev.txt)
+          pip install --quiet $(grep -hE '^(httpx|pydantic|pydantic-settings|numpy|runpod)[=<>]' requirements.txt requirements-dev.txt)
+      - name: ruff check
+        run: ruff check app tests
+      - name: ruff format
+        run: ruff format --check app tests
+      - name: mypy
+        run: mypy
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      # torch solo-CPU antes de requirements-dev.txt (misma versión que el Dockerfile): la wheel
+      # por defecto de sentence-transformers arrastra ~2 GB de CUDA que los tests nunca usan.
+      - name: Install (torch CPU, como en el Dockerfile)
+        run: |
+          pip install --quiet --index-url https://download.pytorch.org/whl/cpu "$(grep -m1 -oE 'torch==[0-9.]+' Dockerfile)"
+          pip install --quiet -r requirements-dev.txt
+      # Si falla, la cola del log sale como anotación del check (visible sin permisos de admin).
+      - name: pytest
+        run: |
+          set -o pipefail
+          pytest -q -x -p no:cacheprovider 2>&1 | tee pytest.log || {
+            printf '::error title=pytest::%s\n' "$(tail -c 3500 pytest.log | tr '\n' '\r' | sed 's/\r/%0A/g')"
+            exit 1
+          }
+
+  # La imagen la construye RunPod (no pasa por GHCR), así que aquí se escanean las dependencias
+  # declaradas (requirements*.txt) en vez de la imagen. El informe completo va a Code scanning.
+  scan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - name: Trivy (informe SARIF)
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln
+          format: sarif
+          output: trivy.sarif
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+      - uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        if: always()
+        with:
+          sarif_file: trivy.sarif
+      - name: Trivy (bloqueo por CRITICAL con arreglo)
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # 0.35.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln
+          format: table
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+          skip-setup-trivy: true

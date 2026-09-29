@@ -73,8 +73,13 @@ class Worker:
         delivered = reporter.completed(completion_payload(job, result, cost))
         logger.info(
             "Training %d (list %d): %d elements, %d enriched, %d cached, %ds, callback=%s",
-            job.training_id, job.list_id, len(result.element_ids), result.enriched_count,
-            result.cached_count, elapsed, "ok" if delivered else "FAILED",
+            job.training_id,
+            job.list_id,
+            len(result.element_ids),
+            result.enriched_count,
+            result.cached_count,
+            elapsed,
+            "ok" if delivered else "FAILED",
         )
         if not delivered:
             return {"status": "error", "training_id": job.training_id, "error": "callback_failed"}
@@ -98,9 +103,7 @@ class Worker:
             return self.embedder
         if name not in self._embedders:
             logger.info("Job %d requests embedding model %s", job.training_id, name)
-            self._embedders[name] = SentenceTransformerEmbedder(
-                name, self.settings.embedding_batch_size
-            )
+            self._embedders[name] = SentenceTransformerEmbedder(name, self.settings.embedding_batch_size)
         return self._embedders[name]
 
 

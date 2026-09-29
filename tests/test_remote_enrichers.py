@@ -116,9 +116,7 @@ def test_an_element_rate_limited_past_its_retries_is_rescued_in_a_later_round():
         content = enrichment_json(element_id)
         return httpx.Response(200, json={"choices": [{"message": {"content": content}}]})
 
-    enricher = GroqEnricher(
-        gemini_settings(groq_api_key="k", llm_retry_attempts=1, llm_retry_rounds=1)
-    )
+    enricher = GroqEnricher(gemini_settings(groq_api_key="k", llm_retry_attempts=1, llm_retry_rounds=1))
     use_transport(enricher, handler)
     results = enricher.enrich_many(make_elements(3), LIST)
 
@@ -132,9 +130,7 @@ def test_an_element_that_keeps_failing_is_dropped_after_all_rounds():
         content = enrichment_json(element_id_from_prompt(request))
         return httpx.Response(200, json={"choices": [{"message": {"content": content}}]})
 
-    enricher = GroqEnricher(
-        gemini_settings(groq_api_key="k", llm_retry_attempts=1, llm_retry_rounds=1)
-    )
+    enricher = GroqEnricher(gemini_settings(groq_api_key="k", llm_retry_attempts=1, llm_retry_rounds=1))
     use_transport(enricher, handler)
     results = enricher.enrich_many(make_elements(3), LIST)
 
@@ -144,9 +140,7 @@ def test_an_element_that_keeps_failing_is_dropped_after_all_rounds():
 def test_gemini_retry_info_in_the_error_body_is_honored():
     response = httpx.Response(
         429,
-        json={"error": {"details": [
-            {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "7s"}
-        ]}},
+        json={"error": {"details": [{"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "7s"}]}},
     )
     enricher = GeminiEnricher(gemini_settings())
 
@@ -183,16 +177,16 @@ def batch_handler(seen: dict):
             return httpx.Response(200, json={"name": name})
         if "/batches/" in url:
             name = "batches/" + url.rsplit("/", 1)[1]
-            inlined = [
-                {"metadata": {"key": key}, "response": gemini_response_for(int(key))}
-                for key in seen[name]
-            ]
-            return httpx.Response(200, json={
-                "name": name,
-                "done": True,
-                "metadata": {"state": "BATCH_STATE_SUCCEEDED"},
-                "response": {"inlinedResponses": {"inlinedResponses": inlined}},
-            })
+            inlined = [{"metadata": {"key": key}, "response": gemini_response_for(int(key))} for key in seen[name]]
+            return httpx.Response(
+                200,
+                json={
+                    "name": name,
+                    "done": True,
+                    "metadata": {"state": "BATCH_STATE_SUCCEEDED"},
+                    "response": {"inlinedResponses": {"inlinedResponses": inlined}},
+                },
+            )
         if url.endswith(":generateContent"):
             seen.setdefault("single", []).append(1)
             return httpx.Response(200, json=gemini_response_for(element_id_from_prompt(request)))

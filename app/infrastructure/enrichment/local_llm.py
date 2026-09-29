@@ -56,8 +56,13 @@ class LocalLlmEnricher:
             # un llama.cpp compilado sin CUDA lo ignora y corre en CPU. Que la GPU se use de
             # verdad depende de la imagen (Dockerfile.gpu) y de que el contenedor reciba `--gpus`.
             supports_offload = bool(llama_cpp.llama_supports_gpu_offload())
-            logger.info("Loading local LLM %s (n_gpu_layers=%d, cuda=%s, gpu_offload_support=%s)",
-                        self._path, self._gpu_layers, _cuda_available(), supports_offload)
+            logger.info(
+                "Loading local LLM %s (n_gpu_layers=%d, cuda=%s, gpu_offload_support=%s)",
+                self._path,
+                self._gpu_layers,
+                _cuda_available(),
+                supports_offload,
+            )
             if self._gpu_layers != 0 and not supports_offload:
                 logger.warning(
                     "llama-cpp-python compilado SIN offload a GPU: el enriquecimiento correrá "
@@ -74,8 +79,9 @@ class LocalLlmEnricher:
             }
             if self._threads:
                 kwargs["n_threads"] = self._threads
-            self._llm = Llama(**kwargs)
-            self._llm.verbose = False  # silenciar los timings por petición; la carga ya quedó logueada
+            llm = Llama(**kwargs)
+            llm.verbose = False  # silenciar los timings por petición; la carga ya quedó logueada
+            self._llm = llm
         return self._llm
 
 

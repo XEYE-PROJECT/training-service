@@ -37,17 +37,16 @@ class WebhookReporter:
         self._retries = max(1, retries)
 
     def phase(self, status: str) -> None:
-        self._post({"training_id": self._training_id, "list_id": self._list_id, "status": status},
-                   attempts=1, timeout=10.0)
+        self._post(
+            {"training_id": self._training_id, "list_id": self._list_id, "status": status}, attempts=1, timeout=10.0
+        )
 
     def completed(self, payload: dict[str, Any]) -> bool:
-        body = {**payload, "training_id": self._training_id, "list_id": self._list_id,
-                "status": "completed"}
+        body = {**payload, "training_id": self._training_id, "list_id": self._list_id, "status": "completed"}
         return self._post(body, attempts=self._retries, timeout=self._timeout)
 
     def failed(self, error: str) -> bool:
-        body = {"training_id": self._training_id, "list_id": self._list_id,
-                "status": "failed", "error": error[:2000]}
+        body = {"training_id": self._training_id, "list_id": self._list_id, "status": "failed", "error": error[:2000]}
         return self._post(body, attempts=self._retries, timeout=self._timeout)
 
     def _post(self, body: dict[str, Any], attempts: int, timeout: float) -> bool:
@@ -58,13 +57,15 @@ class WebhookReporter:
                     return True
                 logger.error(
                     "Callback %s for training %d returned %d: %.200s",
-                    body["status"], self._training_id, response.status_code, response.text,
+                    body["status"],
+                    self._training_id,
+                    response.status_code,
+                    response.text,
                 )
                 if 400 <= response.status_code < 500:
                     return False  # un token o un cuerpo inválidos no se arreglan solos
             except Exception as exc:
-                logger.error("Callback %s for training %d failed: %s",
-                             body["status"], self._training_id, exc)
+                logger.error("Callback %s for training %d failed: %s", body["status"], self._training_id, exc)
             if attempt < attempts:
-                time.sleep(2 ** attempt)
+                time.sleep(2**attempt)
         return False

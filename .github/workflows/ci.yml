@@ -1,0 +1,19 @@
+name: CI
+
+# Push a master y pull requests: gitleaks, ruff + mypy, pytest y Trivy (todo en checks.yml).
+# No despliega ni publica nada: RunPod solo reconstruye al publicar una Release, y eso lo hace
+# release.yml a partir de un tag vX.Y.Z.
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    uses: ./.github/workflows/checks.yml
+    permissions:
+      contents: read
+      security-events: write

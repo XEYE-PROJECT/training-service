@@ -121,6 +121,13 @@ serían ~3 h), así que los enrichers remotos trabajan en lotes (`enrich_many`):
 | **Local** | `Dockerfile` (CPU) o **`Dockerfile.gpu`** | `cli` | El backend con `TRAINING_PROVIDER=docker` hace `docker run --gpus all` por entrenamiento (ver "GPU en local") |
 | **RunPod Serverless** | `Dockerfile.gpu` | `runpod_handler` | **Recomendado con `ENRICHER=local`**: GPU, escala a cero, ~0,06-0,15 $ por job grande |
 
+**Publicar una versión (RunPod).** RunPod (integración con GitHub) reconstruye la imagen del
+endpoint **solo al publicar una Release**, no con cada push. Publicar = `bash release.sh X.Y.Z`
+(deja el tag `vX.Y.Z` apuntando a la sección `## [X.Y.Z]` de `CHANGELOG.md`) + push del tag:
+`release.yml` pasa los checks y crea la Release con las notas de esa versión (sin sección en el
+changelog, el workflow falla y no hay release). Un push a `master` ya no despliega nada: solo pasa
+por `ci.yml`.
+
 ## GPU en local
 
 El contenedor usa la GPU **siempre que pueda**, y hacen falta las dos mitades:
@@ -158,6 +165,26 @@ paso de LLM baja de ~7 s por elemento (CPU) a bastante menos de 1 s.
 
 Los embeddings ya eligen `cuda` solos si torch la ve; el LLM se descarga entero a la GPU con
 `LLM_GPU_LAYERS=-1` (por defecto; una build CPU lo ignora sin romperse).
+
+## Calidad y CI
+
+En local, con las mismas versiones que corre CI (pineadas en `requirements-dev.txt`; la
+configuración de las tres herramientas está en `pyproject.toml`):
+
+```bash
+ruff check app tests && ruff format --check app tests   # lint + formato (`ruff format` para arreglar)
+mypy                                                     # tipos (solo `app/`)
+pytest -q                                                # ~100 tests, ~1 s, sin red ni modelos
+```
+
+- **Pull request y push a `master`** (`ci.yml` → `checks.yml`): gitleaks, ruff + mypy, pytest (con
+  torch CPU, sin CUDA) y Trivy sobre `requirements*.txt`. No despliega.
+- **Tag `vX.Y.Z`** (`release.yml`): los mismos checks y, si pasan, la Release en GitHub con las notas
+  de `CHANGELOG.md`, que es lo que hace que RunPod reconstruya (ver "Dónde desplegarlo").
+- `tests/contracts/*.json` son copias byte a byte de las fixtures canónicas del backend
+  (`backend/src/test/resources/contracts/`); `tests/test_contracts.py` consume el job y produce los
+  tres webhooks con el código real, así un campo renombrado rompe en CI y no en producción. Para
+  cambiar un contrato: edita en el backend, copia aquí y arregla lo que falle.
 
 ## Ejecutar
 

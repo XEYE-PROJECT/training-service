@@ -41,9 +41,7 @@ class SentenceTransformerEmbedder:
             logger.info("Loading embedding model %s on %s", self._model_name, device)
             try:
                 # Primero la caché: la imagen lleva el modelo horneado y debe cargar sin red.
-                self._model = SentenceTransformer(
-                    self._model_name, device=device, local_files_only=True
-                )
+                self._model = SentenceTransformer(self._model_name, device=device, local_files_only=True)
             except Exception:
                 logger.info("Model %s is not cached; downloading it", self._model_name)
                 self._model = SentenceTransformer(self._model_name, device=device)

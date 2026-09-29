@@ -15,9 +15,10 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Callable
+from collections.abc import Callable
 
 from app.application.pipeline import TrainingContext
+from app.application.ports import Enricher
 from app.domain.models import ElementInput, Enrichment
 
 logger = logging.getLogger(__name__)
@@ -50,13 +51,16 @@ class EnrichStep:
             logger.warning(
                 "%d elements need enrichment but the budget is %d; the rest keep their raw "
                 "text this run (they will be picked up by the next training)",
-                len(pending), budget,
+                len(pending),
+                budget,
             )
             pending = pending[:budget]
 
         logger.info(
             "Enriching %d elements (%d reused from cache) with %s",
-            len(pending), len(ctx.enrichments), ctx.enricher.model_name,
+            len(pending),
+            len(ctx.enrichments),
+            ctx.enricher.model_name,
         )
         if not pending:
             return
@@ -65,7 +69,7 @@ class EnrichStep:
         if hasattr(ctx.enricher, "enrich_many"):
             fresh = ctx.enricher.enrich_many(pending, ctx.job.list, heartbeat=heartbeat)
         else:
-            fresh = self._enrich_sequentially(ctx, pending, heartbeat)
+            fresh = self._enrich_sequentially(ctx.enricher, ctx, pending, heartbeat)
 
         for element_id, enrichment in fresh.items():
             ctx.enrichments[element_id] = enrichment
@@ -73,12 +77,12 @@ class EnrichStep:
 
     @staticmethod
     def _enrich_sequentially(
-        ctx: TrainingContext, pending: list[ElementInput], heartbeat: Callable[[], None]
+        enricher: Enricher, ctx: TrainingContext, pending: list[ElementInput], heartbeat: Callable[[], None]
     ) -> dict[int, Enrichment]:
         results: dict[int, Enrichment] = {}
         for done, element in enumerate(pending, start=1):
             try:
-                enrichment = ctx.enricher.enrich(element, ctx.job.list)
+                enrichment = enricher.enrich(element, ctx.job.list)
             except Exception:  # un elemento fallido no debe tumbar el entrenamiento entero
                 logger.exception("Enrichment failed for element %d", element.id)
                 continue

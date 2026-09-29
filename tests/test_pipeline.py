@@ -70,10 +70,12 @@ def test_enrichment_adds_query_variants_to_the_embedded_texts():
 
 def test_cached_enrichment_is_reused_and_not_regenerated():
     cached = Enrichment(summary=["ya descrito"], queries=["consulta cacheada"], model="old-llm")
-    job = make_job([
-        ElementInput(id=1, text="martillo", generated_description=cached.to_json()),
-        ElementInput(id=2, text="destornillador"),
-    ])
+    job = make_job(
+        [
+            ElementInput(id=1, text="martillo", generated_description=cached.to_json()),
+            ElementInput(id=2, text="destornillador"),
+        ]
+    )
     enricher = FakeEnricher()
     result, embedder, _ = run(job, enricher=enricher)
 
@@ -109,11 +111,13 @@ def test_a_batch_capable_enricher_receives_all_pending_elements_at_once():
     # Los remotos (groq/gemini) exponen enrich_many; el paso debe preferirlo al bucle
     # elemento a elemento y respetar caché y presupuesto igualmente.
     cached = Enrichment(summary=["ya descrito"], queries=["consulta cacheada"], model="old-llm")
-    job = make_job([
-        ElementInput(id=1, text="martillo", generated_description=cached.to_json()),
-        ElementInput(id=2, text="destornillador"),
-        ElementInput(id=3, text="sierra"),
-    ])
+    job = make_job(
+        [
+            ElementInput(id=1, text="martillo", generated_description=cached.to_json()),
+            ElementInput(id=2, text="destornillador"),
+            ElementInput(id=3, text="sierra"),
+        ]
+    )
     enricher = FakeBatchEnricher()
     result, _, _ = run(job, enricher=enricher)
 

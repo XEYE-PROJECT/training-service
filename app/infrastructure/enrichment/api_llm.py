@@ -28,8 +28,9 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Callable
+from typing import Any
 
 import httpx
 
@@ -41,9 +42,7 @@ logger = logging.getLogger(__name__)
 
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-GEMINI_BATCH_URL = (
-    "https://generativelanguage.googleapis.com/v1beta/models/{model}:batchGenerateContent"
-)
+GEMINI_BATCH_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:batchGenerateContent"
 GEMINI_POLL_URL = "https://generativelanguage.googleapis.com/v1beta/{name}"
 
 _RETRIABLE_STATUSES = {429, 500, 502, 503, 504}
@@ -109,15 +108,17 @@ class _RemoteEnricher:
             if round_no > 1:
                 logger.warning(
                     "Retrying %d element(s) whose enrichment failed (round %d/%d)",
-                    len(pending), round_no, rounds,
+                    len(pending),
+                    round_no,
+                    rounds,
                 )
                 _sleep_with_heartbeat(self._settings.llm_retry_round_wait_seconds, heartbeat)
             pending = self._enrich_round(pending, list_context, results, heartbeat)
         if pending:
             logger.warning(
-                "%d element(s) still without enrichment after %d round(s); "
-                "they keep their raw text this run",
-                len(pending), rounds,
+                "%d element(s) still without enrichment after %d round(s); they keep their raw text this run",
+                len(pending),
+                rounds,
             )
         return results
 
@@ -312,9 +313,7 @@ class GeminiEnricher(_RemoteEnricher):
             unresolved.extend(e for e in by_key.values() if e.id not in answered)
         return results, unresolved
 
-    def _poll_batch(
-        self, name: str, deadline: float, heartbeat: Heartbeat | None
-    ) -> dict[str, Any] | None:
+    def _poll_batch(self, name: str, deadline: float, heartbeat: Heartbeat | None) -> dict[str, Any] | None:
         """Sondea el job hasta que acabe. ``None`` = fallo o timeout (no lanza)."""
         url = GEMINI_POLL_URL.format(name=name)
         interval = max(1.0, self._settings.llm_batch_poll_seconds)
