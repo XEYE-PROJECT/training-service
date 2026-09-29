@@ -42,9 +42,12 @@ def sleeps(monkeypatch) -> list[float]:
     return slept
 
 
-def make_reporter(secret: str | None = "s3cret", retries: int = 3, timeout: float = 60.0) -> WebhookReporter:
+TOKEN = "42." + "0" * 64
+
+
+def make_reporter(token: str | None = TOKEN, retries: int = 3, timeout: float = 60.0) -> WebhookReporter:
     return WebhookReporter(
-        callback_url=URL, training_id=42, list_id=7, secret=secret, timeout_seconds=timeout, retries=retries
+        callback_url=URL, training_id=42, list_id=7, token=token, timeout_seconds=timeout, retries=retries
     )
 
 
@@ -59,7 +62,7 @@ def test_phase_posts_the_minimal_body_with_a_short_timeout(post):
     assert call["url"] == URL
     assert call["json"] == {"training_id": 42, "list_id": 7, "status": "training"}
     assert call["timeout"] == 10.0
-    assert call["headers"]["X-Webhook-Token"] == "s3cret"
+    assert call["headers"]["X-Webhook-Token"] == TOKEN
 
 
 @pytest.mark.parametrize("outcome", [500, httpx.ConnectError("down")])
@@ -92,9 +95,9 @@ def test_completed_adds_ids_and_status_to_the_payload(post):
     assert call["headers"]["Content-Type"] == "application/json"
 
 
-@pytest.mark.parametrize("secret", [None, ""])
-def test_token_header_only_when_there_is_a_secret(post, secret):
-    make_reporter(secret=secret).completed({})
+@pytest.mark.parametrize("token", [None, ""])
+def test_token_header_only_when_there_is_a_token(post, token):
+    make_reporter(token=token).completed({})
     assert "X-Webhook-Token" not in post.calls[0]["headers"]
 
 

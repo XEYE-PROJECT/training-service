@@ -13,16 +13,23 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
+from app.domain.spend import LlmUsage
+
 ENRICHMENT_FORMAT_VERSION = 1
 
 
 @dataclass(frozen=True)
 class ListInput:
-    """La lista que se entrena: su nombre/descripción son el contexto de dominio para el LLM."""
+    """La lista que se entrena: su nombre/descripción son el contexto de dominio para el LLM.
+
+    ``llm_enrichment`` False = el dueño renunció al LLM: ningún texto de la lista se envía a un
+    modelo de lenguaje (ni local ni remoto), digan lo que digan las opciones del run.
+    """
 
     id: int
     name: str | None = None
     description: str | None = None
+    llm_enrichment: bool = True
 
     @property
     def context(self) -> str | None:
@@ -102,7 +109,9 @@ class TrainingJob:
     training_id: int
     list_id: int
     callback_url: str
-    webhook_secret: str | None = None
+    #: Token por entrenamiento (``<training_id>.<hmac>``) que el backend derivó de su secreto: va
+    #: en ``X-Webhook-Token`` y solo sirve para reportar sobre este run. El secreto nunca llega aquí.
+    webhook_token: str | None = None
     user_id: int | None = None
     list: ListInput = field(default_factory=lambda: ListInput(id=0))
     # El campo `list` de arriba tapa al builtin en el cuerpo de la clase: sin `builtins.`,
@@ -130,3 +139,8 @@ class TrainingResult:
     time: dict[str, int] = field(default_factory=dict)
     enriched_count: int = 0
     cached_count: int = 0
+    #: Tokens consumidos en el LLM y su coste real (0 sin tarifa configurada); informativo.
+    llm_usage: LlmUsage = field(default_factory=LlmUsage)
+    llm_cost: float = 0.0
+    #: True si el tope de gasto por job (LLM_MAX_COST_PER_JOB) dejó elementos sin enriquecer.
+    llm_budget_exhausted: bool = False

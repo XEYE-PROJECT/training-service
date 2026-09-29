@@ -12,6 +12,7 @@ from pathlib import Path
 
 from app.core.config import Settings
 from app.domain.models import ElementInput, Enrichment, ListInput
+from app.domain.spend import SpendMeter
 from app.infrastructure.enrichment.prompt import SYSTEM_PROMPT, build_user_prompt, parse_response
 
 logger = logging.getLogger(__name__)
@@ -31,7 +32,9 @@ class LocalLlmEnricher:
     def model_name(self) -> str:
         return self._path.stem
 
-    def enrich(self, element: ElementInput, list_context: ListInput) -> Enrichment | None:
+    def enrich(
+        self, element: ElementInput, list_context: ListInput, meter: SpendMeter | None = None
+    ) -> Enrichment | None:
         llm = self._load()
         response = llm.create_chat_completion(
             messages=[
@@ -42,6 +45,9 @@ class LocalLlmEnricher:
             max_tokens=self._max_tokens,
             response_format={"type": "json_object"},
         )
+        if meter is not None:
+            usage = response.get("usage") or {}
+            meter.add(usage.get("prompt_tokens"), usage.get("completion_tokens"))
         content = (response["choices"][0]["message"].get("content") or "").strip()
         return parse_response(content, self.model_name)
 

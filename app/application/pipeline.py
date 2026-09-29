@@ -18,6 +18,7 @@ import numpy as np
 from app.application.ports import Embedder, Enricher, ProgressReporter
 from app.core.config import Settings
 from app.domain.models import ElementInput, Enrichment, TrainingJob
+from app.domain.spend import SpendMeter
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,8 @@ class TrainingContext:
     embedder: Embedder
     enricher: Enricher | None = None
     reporter: ProgressReporter | None = None
+    #: Tokens/gasto del LLM en este job y su tope (por defecto, sin tarifa ni tope).
+    spend: SpendMeter = field(default_factory=SpendMeter)
 
     #: Elementos en orden id ASC — el orden de filas de todas las matrices. Lo fija el pipeline.
     elements: list[ElementInput] = field(default_factory=list)

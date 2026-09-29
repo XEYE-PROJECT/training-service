@@ -34,7 +34,8 @@ services:
       LLM_GPU_LAYERS: ${LLM_GPU_LAYERS:--1}
       GROQ_API_KEY: ${GROQ_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
-      WEBHOOK_SECRET: ${WEBHOOK_SECRET:-dev-webhook-secret}
+      # El backend local es http:// dentro de la red docker; el token del webhook viene en el job.
+      CALLBACK_ALLOW_HTTP: "true"
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     volumes:
       - ./input:/data/input:ro

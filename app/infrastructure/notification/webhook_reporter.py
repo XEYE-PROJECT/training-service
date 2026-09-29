@@ -1,5 +1,8 @@
 """Lo único que habla con el backend: ``POST {callback_url}`` con ``X-Webhook-Token``.
 
+El token es el del job (uno por entrenamiento, derivado del secreto del backend con HMAC):
+este worker no conoce ningún secreto.
+
 Los callbacks de progreso (``optimizing``/``training``) son fire-and-forget: perder uno
 solo desactualiza el estado en la UI. El final (``completed``/``failed``) se reintenta con
 backoff: perderlo deja el entrenamiento clavado en ``initialized`` para siempre y, en
@@ -23,7 +26,7 @@ class WebhookReporter:
         callback_url: str,
         training_id: int,
         list_id: int,
-        secret: str | None = None,
+        token: str | None = None,
         timeout_seconds: float = 60.0,
         retries: int = 3,
     ) -> None:
@@ -31,8 +34,8 @@ class WebhookReporter:
         self._training_id = training_id
         self._list_id = list_id
         self._headers = {"Content-Type": "application/json"}
-        if secret:
-            self._headers["X-Webhook-Token"] = secret
+        if token:
+            self._headers["X-Webhook-Token"] = token
         self._timeout = timeout_seconds
         self._retries = max(1, retries)
 

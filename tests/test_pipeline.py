@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from app.application.run_training import RunTraining, completion_payload, compute_cost
-from app.domain.models import ElementInput, Enrichment
+from app.domain.models import ElementInput, Enrichment, ListInput
 from app.domain.wire import decode_matrix
 from tests.conftest import (
     DIM,
@@ -98,6 +98,45 @@ def test_force_enrich_option_bypasses_the_cache():
     assert enricher.seen == [1]
 
 
+def test_a_list_that_opted_out_never_reaches_the_llm():
+    # Aunque la estrategia sea la normal, con llm_enrichment=false ningún texto va al modelo.
+    job = make_job(
+        [ElementInput(id=1, text="martillo"), ElementInput(id=2, text="sierra")],
+        options={"strategy": "default", "force_enrich": True},
+        list=ListInput(id=3, name="Herramientas", llm_enrichment=False),
+    )
+    enricher = FakeEnricher()
+    result, embedder, reporter = run(job, enricher=enricher)
+
+    assert enricher.seen == []
+    assert result.enriched_count == 0 and result.generated_descriptions == {}
+    assert len(embedder.calls[0]) == 2  # solo el texto de cada elemento
+    assert reporter.phases == ["optimizing", "training"]
+
+
+def test_the_spending_cap_stops_llm_calls_and_still_embeds_everything():
+    # 100 tokens de entrada a 1/M = 0.0001 por elemento; tope 0.00025 -> 3 peticiones y para.
+    settings = make_settings(llm_price_per_million_input_tokens=1.0, llm_max_cost_per_job=0.00025)
+    job = make_job([ElementInput(id=i, text=f"item {i}") for i in range(1, 6)])
+    enricher = FakeEnricher()
+    result, _, _ = run(job, enricher=enricher, settings=settings)
+
+    assert len(enricher.seen) == 3
+    assert result.llm_budget_exhausted is True
+    assert result.llm_usage.requests == 3 and result.llm_cost == 0.0003
+    assert decode_matrix(result.embeddings_b64).shape == (5, DIM)
+
+
+def test_the_spending_cap_also_applies_to_batch_enrichers():
+    settings = make_settings(llm_price_per_million_output_tokens=1.0, llm_max_cost_per_job=0.00005)
+    job = make_job([ElementInput(id=i, text=f"item {i}") for i in range(1, 6)])
+    enricher = FakeBatchEnricher()
+    result, _, _ = run(job, enricher=enricher, settings=settings)
+
+    assert len(enricher.seen) == 2  # 40 tokens de salida = 0.00004 por elemento; a la 2ª se alcanza el tope
+    assert result.llm_budget_exhausted is True
+
+
 def test_enrich_budget_caps_llm_calls_and_still_embeds_everything():
     job = make_job([ElementInput(id=i, text=f"item {i}") for i in range(1, 6)])
     enricher = FakeEnricher()
@@ -169,3 +208,5 @@ def test_completion_payload_matches_the_backend_contract():
     assert payload["described_count"] == result.enriched_count + result.cached_count
     assert payload["time"]["total_seconds"] >= 0
     assert payload["cost"]["total"] == pytest.approx(10 / 3600 * 1.10, rel=1e-3)
+    assert payload["cost"]["llm"] == 0.0
+    assert payload["usage"]["llm_requests"] == 2

@@ -38,19 +38,26 @@ class Worker:
         ``{"status": "error", ...}`` — una excepción que escapara de aquí dejaría el
         entrenamiento clavado en ``initialized`` en los reintentos de RunPod.
         """
-        secret = job.webhook_secret or self.settings.webhook_secret.get_secret_value() or None
+        # El destino del callback se valida ANTES de crear el reporter: a una URL no permitida no
+        # se le envía nada, ni siquiera el `failed` (el backend marcará el run estancado).
+        destination = self.settings.callback_problem(job.callback_url)
+        if destination:
+            logger.error("Training %d not started: %s", job.training_id, destination)
+            return {"status": "error", "training_id": job.training_id, "error": destination}
         reporter = WebhookReporter(
             callback_url=job.callback_url,
             training_id=job.training_id,
             list_id=job.list_id,
-            secret=secret,
+            token=job.webhook_token,
             timeout_seconds=self.settings.callback_timeout_seconds,
             retries=self.settings.callback_retries,
         )
-        # Fail fast: un secreto ausente o de desarrollo haría 403 en el callback *después* de
-        # pagar todo el cómputo. Se reporta `failed` igualmente (si el 403 lo rechaza, el
-        # backend lo marcará estancado a los 30 min) y se sale sin entrenar.
-        problem = self.settings.webhook_secret_problem(job.callback_url, job.webhook_secret)
+        # Fail fast: un token ausente/ajeno haría 403 en el callback *después* de pagar todo el
+        # cómputo, y un modelo fuera de la allowlist descargaría cualquier cosa de Hugging Face.
+        # Se reporta `failed` (si el 403 lo rechaza, el backend lo marcará estancado) y se sale.
+        problem = self.settings.webhook_token_problem(job.webhook_token, job.training_id) or (
+            self.settings.embedding_model_problem(job.option("embedding_model"))
+        )
         if problem:
             logger.error("Training %d not started: %s", job.training_id, problem)
             reporter.failed(problem)
@@ -68,17 +75,24 @@ class Worker:
 
         elapsed = int(time.monotonic() - started)
         result.time["total_seconds"] = max(result.time.get("total_seconds", 0), elapsed)
-        cost = compute_cost(result.time["total_seconds"], self.settings.compute_price_per_hour)
+        cost = compute_cost(result.time["total_seconds"], self.settings.compute_price_per_hour, result.llm_cost)
 
         delivered = reporter.completed(completion_payload(job, result, cost))
         logger.info(
-            "Training %d (list %d): %d elements, %d enriched, %d cached, %ds, callback=%s",
+            "Training %d (list %d): %d elements, %d enriched, %d cached, %ds, llm tokens in/out=%d/%d "
+            "(%d requests, cost %.6f%s), compute cost %.6f, callback=%s",
             job.training_id,
             job.list_id,
             len(result.element_ids),
             result.enriched_count,
             result.cached_count,
             elapsed,
+            result.llm_usage.input_tokens,
+            result.llm_usage.output_tokens,
+            result.llm_usage.requests,
+            result.llm_cost,
+            ", BUDGET EXHAUSTED" if result.llm_budget_exhausted else "",
+            cost["runpod"],
             "ok" if delivered else "FAILED",
         )
         if not delivered:
@@ -95,12 +109,16 @@ class Worker:
     def _embedder_for(self, job: TrainingJob) -> Embedder:
         """La opción ``embedding_model`` del job elige el modelo; por defecto, el de settings.
 
-        Se cachea por nombre para que un worker caliente de RunPod que alterna
-        modelos no los recargue en cada job.
+        Solo modelos de la allowlist (``EMBEDDING_MODELS_ALLOWED`` + el por defecto): cualquier
+        otro nombre se rechaza antes de tocar la red. Se cachea por nombre para que un worker
+        caliente de RunPod que alterna modelos no los recargue en cada job.
         """
         name = str(job.option("embedding_model") or "").strip()
         if not name or name == self.embedder.model_name:
             return self.embedder
+        problem = self.settings.embedding_model_problem(name)
+        if problem:
+            raise ValueError(problem)
         if name not in self._embedders:
             logger.info("Job %d requests embedding model %s", job.training_id, name)
             self._embedders[name] = SentenceTransformerEmbedder(name, self.settings.embedding_batch_size)

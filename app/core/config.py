@@ -3,17 +3,22 @@ lo arranque ``docker run`` o RunPod."""
 
 from __future__ import annotations
 
+import re
 from functools import lru_cache
 from typing import Literal
+from urllib.parse import urlsplit
 
 from pydantic import SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-#: Valores de .env.example / compose de desarrollo: nunca válidos contra un backend https.
-INSECURE_WEBHOOK_SECRETS = frozenset({"dev-webhook-secret", "changeme", "change-me", "secret", "password"})
-MIN_WEBHOOK_SECRET_LENGTH = 32
-
 Enricher = Literal["none", "local", "groq", "gemini"]
+
+#: Forma del token por entrenamiento que emite el backend: ``<training_id>.<hex HMAC-SHA256>``.
+WEBHOOK_TOKEN_PATTERN = re.compile(r"^(\d+)\.([0-9a-fA-F]{64})$")
+
+
+def _split_names(raw: str) -> list[str]:
+    return [item.strip() for item in re.split(r"[,\s]+", raw or "") if item.strip()]
 
 
 class Settings(BaseSettings):
@@ -25,6 +30,11 @@ class Settings(BaseSettings):
     #: Modelo de embeddings. Debe poder cargarlo también el search-service (embebe las
     #: consultas con el nombre que reportamos), así que mantenerlos en la misma imagen.
     embedding_model: str = "paraphrase-multilingual-MiniLM-L12-v2"
+    #: Allowlist de la opción ``embedding_model`` del job (nombres separados por espacios o
+    #: comas), además del modelo por defecto. Un job que pida otro se rechaza antes de tocar la
+    #: red: sin ella cualquier nombre haría descargar un modelo arbitrario de Hugging Face. Las
+    #: imágenes la fijan a los modelos que hornean.
+    embedding_models_allowed: str = ""
     embedding_batch_size: int = 32
     #: Peso de cada consulta generada por el LLM en el centroide del elemento (documento = 1.0).
     query_variant_weight: float = 0.35
@@ -35,6 +45,7 @@ class Settings(BaseSettings):
     enrich_max_elements: int = 0  # 0 = sin tope; un tope mantiene las ejecuciones solo-CPU en el timeout
     llm_model_path: str = "/app/models/qwen2.5-3b-instruct-q4_k_m.gguf"
     llm_context_size: int = 2048
+    #: Tope de tokens de salida por petición (local y remotos) y temperatura, para todos los proveedores.
     llm_max_tokens: int = 384
     llm_temperature: float = 0.3
     llm_threads: int = 0  # 0 = decide llama.cpp
@@ -68,11 +79,21 @@ class Settings(BaseSettings):
     llm_batch_poll_seconds: float = 15.0
     #: Espera máxima a la Batch API antes de rematar lo que falte con peticiones normales.
     llm_batch_wait_minutes: float = 60.0
+    #: Tarifa del proveedor por millón de tokens de entrada/salida (0 = no se tarifica) y tope
+    #: de gasto por job en esas unidades (0 = sin tope). Alcanzado el tope no se lanza ninguna
+    #: petición más: lo que queda conserva su texto y lo recoge el siguiente entrenamiento.
+    llm_price_per_million_input_tokens: float = 0.0
+    llm_price_per_million_output_tokens: float = 0.0
+    llm_max_cost_per_job: float = 0.0
 
     # --- Callback al backend --------------------------------------------------------
-    #: Secreto de la cabecera X-Webhook-Token (= TRAINING_WEBHOOK_SECRET del backend). Llega
-    #: por el entorno del contenedor / endpoint de RunPod: el backend ya no lo mete en el job.
-    webhook_secret: SecretStr = SecretStr("")
+    #: El token de X-Webhook-Token viaja en el job (uno por entrenamiento, derivado del secreto
+    #: del backend con HMAC): aquí no hay secreto. Lo que sí se valida es a dónde se envía:
+    #: solo https salvo CALLBACK_ALLOW_HTTP (backend local en la red docker), y solo a los hosts
+    #: de CALLBACK_ALLOWED_HOSTS si se fija (en RunPod: hooks.xeye.es). Sin allowlist, un job
+    #: manipulado podría hacer que el worker enviara los textos de la lista a cualquier URL.
+    callback_allowed_hosts: str = ""
+    callback_allow_http: bool = False
     callback_timeout_seconds: float = 60.0
     callback_retries: int = 3
 
@@ -95,8 +116,8 @@ class Settings(BaseSettings):
     def _fail_fast(self) -> Settings:
         """Lo que fallaría a mitad de un entrenamiento (tras pagar embeddings) falla al arrancar.
 
-        El secreto del webhook no se valida aquí porque depende del job (ver
-        ``Worker.check_webhook_secret``): la misma imagen sirve para local y RunPod.
+        Lo que depende del job (token del webhook, destino del callback, modelo pedido) se
+        comprueba en ``Worker.run`` antes de cargar nada: la misma imagen sirve para local y RunPod.
         """
         problems: list[str] = []
         if self.enricher == "groq" and not self.groq_api_key.get_secret_value().strip():
@@ -107,27 +128,55 @@ class Settings(BaseSettings):
             problems.append("EMBEDDING_BATCH_SIZE must be > 0")
         if self.callback_retries < 1:
             problems.append("CALLBACK_RETRIES must be >= 1 (the final callback must be retried)")
+        if self.llm_max_tokens <= 0:
+            problems.append("LLM_MAX_TOKENS must be > 0")
+        if self.llm_max_cost_per_job > 0 and not (
+            self.llm_price_per_million_input_tokens > 0 or self.llm_price_per_million_output_tokens > 0
+        ):
+            problems.append(
+                "LLM_MAX_COST_PER_JOB needs LLM_PRICE_PER_MILLION_INPUT_TOKENS/OUTPUT_TOKENS "
+                "(a cap without prices would never trigger)"
+            )
         if problems:
             raise ValueError("Unsafe configuration:\n - " + "\n - ".join(problems))
         return self
 
-    def webhook_secret_problem(self, callback_url: str, job_secret: str | None = None) -> str | None:
-        """Motivo por el que el callback fallaría con 403, o ``None`` si el secreto vale.
+    def allowed_embedding_models(self) -> set[str]:
+        return {self.embedding_model, *_split_names(self.embedding_models_allowed)}
 
-        Contra un backend ``https://`` (producción) se exige un secreto fuerte y distinto de los
-        de desarrollo; contra ``http://`` (backend local en la red docker) basta con que exista.
+    def embedding_model_problem(self, requested: str | None) -> str | None:
+        """Motivo por el que la opción ``embedding_model`` del job se rechaza, o ``None``."""
+        name = str(requested or "").strip()
+        if not name or name in self.allowed_embedding_models():
+            return None
+        allowed = ", ".join(sorted(self.allowed_embedding_models()))
+        return f"embedding model '{name}' is not allowed on this worker (allowed: {allowed})"
+
+    def callback_problem(self, callback_url: str) -> str | None:
+        """Motivo por el que NO se debe llamar a ``callback_url``, o ``None`` si es un destino válido."""
+        parts = urlsplit(str(callback_url or "").strip())
+        host = (parts.hostname or "").lower()
+        if parts.scheme not in {"http", "https"} or not host:
+            return f"callback_url '{callback_url}' is not an absolute http(s) URL"
+        if parts.scheme == "http" and not self.callback_allow_http:
+            return "callback_url must use https (set CALLBACK_ALLOW_HTTP=true only for a local backend)"
+        allowed = {h.lower() for h in _split_names(self.callback_allowed_hosts)}
+        if allowed and host not in allowed:
+            return f"callback host '{host}' is not in CALLBACK_ALLOWED_HOSTS ({', '.join(sorted(allowed))})"
+        return None
+
+    @staticmethod
+    def webhook_token_problem(token: str | None, training_id: int) -> str | None:
+        """Motivo por el que el callback fallaría con 403, o ``None`` si el token tiene sentido.
+
+        Solo forma e id (el HMAC lo verifica el backend): un job sin token, o con el de otro
+        entrenamiento, no debe pagar un entrenamiento cuyo resultado va a ser rechazado.
         """
-        secret = (job_secret or self.webhook_secret.get_secret_value()).strip()
-        if not secret:
-            return "WEBHOOK_SECRET is not set: the backend would reject the callback with 403"
-        if callback_url.lower().startswith("https://"):
-            if secret.lower() in INSECURE_WEBHOOK_SECRETS:
-                return "WEBHOOK_SECRET is a known development value; a production backend rejects it"
-            if len(secret) < MIN_WEBHOOK_SECRET_LENGTH:
-                return (
-                    f"WEBHOOK_SECRET must be at least {MIN_WEBHOOK_SECRET_LENGTH} characters "
-                    "against a production backend"
-                )
+        match = WEBHOOK_TOKEN_PATTERN.match(str(token or "").strip())
+        if not match:
+            return "the job has no valid webhook_token: the backend would reject the callback with 403"
+        if int(match.group(1)) != int(training_id):
+            return f"webhook_token belongs to training {match.group(1)}, not {training_id}"
         return None
 
 

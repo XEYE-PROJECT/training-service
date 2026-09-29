@@ -1,0 +1,25 @@
+# Solo `app/` y los requirements entran en la imagen (ver COPY de los Dockerfiles); esto evita
+# que el contexto arrastre el venv, cachés, ejemplos, tests o un .env con claves.
+.git
+.github
+.venv
+venv
+__pycache__
+**/__pycache__
+*.py[cod]
+.pytest_cache
+.mypy_cache
+.ruff_cache
+tests
+storage
+input
+.env
+.env.*
+!.env.example
+*.md
+!README.md
+Dockerfile*
+docker-compose.yml
+release.sh
+.pre-commit-config.yaml
+*.Identifier

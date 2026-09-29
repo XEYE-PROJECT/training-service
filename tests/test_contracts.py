@@ -53,7 +53,10 @@ def test_the_canonical_job_is_parsed_field_by_field():
 
     assert (job.training_id, job.list_id, job.user_id) == (42, 7, 3)
     assert job.callback_url == "https://hooks.xeye.es/webhooks/training-update"
-    assert job.webhook_secret is None  # el secreto nunca viaja en el job
+    # El secreto nunca viaja en el job: viaja un token por entrenamiento (id.hmac) que el backend verifica.
+    assert job.webhook_token and job.webhook_token.startswith("42.")
+    assert parse_job(fixture("training-job.json")).webhook_token == fixture("training-job.json")["webhook_token"]
+    assert job.list.llm_enrichment is True
     assert job.list.context == "Herramientas. Catálogo de ferretería"
     assert [e.id for e in job.elements] == [101, 102]
     assert job.elements[0].description == "Mango de madera, 500 g"
@@ -101,7 +104,7 @@ def test_completed_payload_has_exactly_the_keys_of_the_canonical_webhook():
         cached_count=1,
     )
 
-    payload = completion_payload(job, result, compute_cost(5, 0.5))
+    payload = completion_payload(job, result, compute_cost(5, 0.5, llm_cost=0.00012))
 
     assert set(payload) == set(expected)
     assert (payload["training_id"], payload["list_id"], payload["status"]) == (42, 7, "completed")
@@ -112,6 +115,9 @@ def test_completed_payload_has_exactly_the_keys_of_the_canonical_webhook():
     assert all(isinstance(v, int) for v in payload["time"].values())
     assert set(payload["cost"]) == set(expected["cost"])
     assert all(isinstance(v, float) for v in payload["cost"].values())
+    assert set(payload["usage"]) == set(expected["usage"])
+    assert isinstance(payload["usage"]["llm_budget_exhausted"], bool)
+    assert all(isinstance(payload["usage"][k], int) for k in ("llm_input_tokens", "llm_output_tokens", "llm_requests"))
 
 
 def test_the_canonical_embeddings_data_decodes_with_the_wire_format():

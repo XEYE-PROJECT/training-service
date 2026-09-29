@@ -13,6 +13,8 @@
 # No usar `all-major`: añade sm_60/70 (GPUs que RunPod no ofrece) y el build de RunPod
 # ya roza su límite de 30 min.
 # Bases fijadas por digest (Dependabot abre PR cuando cambian): el build de RunPod es reproducible.
+# Endurecimiento: mismo esquema que el Dockerfile de CPU (usuario `xeye` sin root, torch fijado,
+# GGUF por SHA-256, modelos por revisión, HF_HUB_OFFLINE=1 y allowlist de modelos).
 FROM nvidia/cuda:12.8.1-devel-ubuntu22.04@sha256:a99a1860ba8e2916e5c3e73b72ec4c4301653a84586e05bfc9a2aa2d58027e97 AS llama-build
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -41,11 +43,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         python3.11 python3.11-venv python3-pip git curl \
     && ln -sf /usr/bin/python3.11 /usr/bin/python \
     && ln -sf /usr/bin/python3.11 /usr/bin/python3 \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --uid 1000 --user-group --home-dir /app --no-create-home --shell /usr/sbin/nologin xeye
 
 RUN python -m pip install --upgrade pip
 
-RUN pip install torch --index-url https://download.pytorch.org/whl/cu121
+# Misma versión de torch que la imagen de CPU (wheel CUDA 12.1; fijada, no "la última").
+RUN pip install torch==2.5.1 --index-url https://download.pytorch.org/whl/cu121
 
 # Wheel compilado en el build stage (ver arriba): las dependencias las resuelve pip de PyPI.
 COPY --from=llama-build /wheels /wheels
@@ -54,28 +58,48 @@ RUN pip install /wheels/llama_cpp_python-*.whl && rm -rf /wheels
 COPY requirements.txt ./
 RUN pip install -r requirements.txt "runpod>=1.7,<2.0"
 
+# A partir de aquí todo es del usuario del worker: los modelos se descargan ya como `xeye`
+# (un chown -R posterior duplicaría gigabytes en una capa nueva).
+RUN mkdir -p /app/models /app/.hf-cache && chown -R xeye:xeye /app
+USER xeye
+
 ARG EMBEDDING_MODEL=paraphrase-multilingual-MiniLM-L12-v2
 ENV EMBEDDING_MODEL=${EMBEDDING_MODEL}
 RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('${EMBEDDING_MODEL}')"
 
+# GGUF verificado por SHA-256 (el que publica Hugging Face): si upstream lo reemplaza, el build falla.
 ARG LLM_MODEL_REPO=bartowski/Qwen2.5-3B-Instruct-GGUF
 ARG LLM_MODEL_FILE=Qwen2.5-3B-Instruct-Q4_K_M.gguf
+ARG LLM_MODEL_SHA256=9c9f56a391a3abbd5b89d0245bf6106081bcc3173119d4229235dd9d23253f94
 ENV LLM_MODEL_PATH=/app/models/${LLM_MODEL_FILE}
-RUN mkdir -p /app/models \
-    && python -c "from huggingface_hub import hf_hub_download; hf_hub_download(repo_id='${LLM_MODEL_REPO}', filename='${LLM_MODEL_FILE}', local_dir='/app/models')"
+RUN python -c "from huggingface_hub import hf_hub_download; hf_hub_download(repo_id='${LLM_MODEL_REPO}', filename='${LLM_MODEL_FILE}', local_dir='/app/models')" \
+    && echo "${LLM_MODEL_SHA256}  /app/models/${LLM_MODEL_FILE}" | sha256sum -c - \
+    && rm -rf /app/models/.cache
 
 # Modelos de embeddings extra seleccionables por entrenamiento (opción `embedding_model`).
 # Mantener en sincronía con el Dockerfile de CPU, `xeye.training.embedding-models` del
-# backend y la imagen del search-service.
+# backend y la imagen del search-service. Son también la allowlist del worker.
 # RunPod construye esta imagen desde GitHub sin posibilidad de pasar build-args — el
 # default ES la config de prod. mpnet añade ~1.1 GB al build; vigilar el límite de
 # 30 min de RunPod si se añaden más modelos.
 ARG EXTRA_EMBEDDING_MODELS="paraphrase-multilingual-mpnet-base-v2"
+ENV EMBEDDING_MODELS_ALLOWED=${EXTRA_EMBEDDING_MODELS}
 RUN for m in ${EXTRA_EMBEDDING_MODELS}; do \
         python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('$m')"; \
     done
 
-COPY app ./app
+# Cada modelo horneado debe ser la revisión (commit de Hugging Face) que se auditó.
+ARG EMBEDDING_MODEL_REVISIONS="paraphrase-multilingual-MiniLM-L12-v2=e8f8c211226b894fcb81acc59f3b34ba3efd5f42 paraphrase-multilingual-mpnet-base-v2=4328cf26390c98c5e3c738b4460a05b95f4911f5"
+RUN for pair in ${EMBEDDING_MODEL_REVISIONS}; do \
+        name="${pair%%=*}"; rev="${pair#*=}"; \
+        ref="$(cat "${HF_HOME}/hub/models--sentence-transformers--${name}/refs/main")"; \
+        [ "$ref" = "$rev" ] || { echo "Model ${name} resolved to ${ref}, expected ${rev}: update EMBEDDING_MODEL_REVISIONS deliberately"; exit 1; }; \
+    done
+
+# Nada se descarga en ejecución: lo que no está horneado no existe.
+ENV HF_HUB_OFFLINE=1
+
+COPY --chown=xeye:xeye app ./app
 
 # Commit desplegado, para etiquetar los eventos de Sentry (RunPod construye sin build-args:
 # ahí queda "unknown"; se puede fijar SENTRY_RELEASE en las variables del endpoint).

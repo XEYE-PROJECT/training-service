@@ -7,20 +7,26 @@ import pytest
 
 from app.core.config import Settings
 from app.domain.models import ElementInput, Enrichment, ListInput, TrainingJob
+from app.domain.spend import SpendMeter
 
 DIM = 16
+#: Token con la forma que emite el backend (<training_id>.<64 hex>); el HMAC solo lo verifica el backend.
+JOB_TOKEN = "7.0000000000000000000000000000000000000000000000000000000000000000"
 
 
 def make_settings(**overrides) -> Settings:
     defaults = dict(
         strategy="default",
         embedding_model="fake-model",
+        embedding_models_allowed="paraphrase-multilingual-mpnet-base-v2",
         enricher="none",
         enrich_max_elements=0,
         query_variant_weight=0.35,
+        # Los jobs de prueba apuntan a un backend http local.
+        callback_allow_http=True,
     )
     defaults.update(overrides)
-    # _env_file=None: los tests no deben leer el .env real del desarrollador (claves, WEBHOOK_SECRET).
+    # _env_file=None: los tests no deben leer el .env real del desarrollador (claves de API).
     return Settings(_env_file=None, **defaults)
 
 
@@ -47,19 +53,26 @@ class FakeEmbedder:
 class FakeEnricher:
     """Registra qué se le pidió enriquecer; devuelve una línea de resumen y dos consultas."""
 
-    def __init__(self, name: str = "fake-llm", fail_on: set[int] | None = None) -> None:
+    def __init__(
+        self, name: str = "fake-llm", fail_on: set[int] | None = None, tokens: tuple[int, int] = (100, 40)
+    ) -> None:
         self._name = name
         self._fail_on = fail_on or set()
+        self._tokens = tokens
         self.seen: list[int] = []
 
     @property
     def model_name(self) -> str:
         return self._name
 
-    def enrich(self, element: ElementInput, list_context: ListInput) -> Enrichment | None:
+    def enrich(
+        self, element: ElementInput, list_context: ListInput, meter: SpendMeter | None = None
+    ) -> Enrichment | None:
         self.seen.append(element.id)
         if element.id in self._fail_on:
             raise RuntimeError("boom")
+        if meter is not None:
+            meter.add(*self._tokens)
         return Enrichment(
             summary=[f"{element.text} es un elemento"],
             queries=[f"donde comprar {element.text}", f"{element.text} barato"],
@@ -74,12 +87,14 @@ class FakeBatchEnricher(FakeEnricher):
         super().__init__(name, fail_on)
         self.batches: list[list[int]] = []
 
-    def enrich_many(self, elements, list_context, heartbeat=None):
+    def enrich_many(self, elements, list_context, heartbeat=None, meter=None):
         self.batches.append([e.id for e in elements])
         results = {}
         for element in elements:
+            if meter is not None and meter.exhausted:
+                break
             try:
-                enrichment = self.enrich(element, list_context)
+                enrichment = self.enrich(element, list_context, meter=meter)
             except RuntimeError:
                 continue
             results[element.id] = enrichment
@@ -109,7 +124,7 @@ def make_job(elements: list[ElementInput] | None = None, **overrides) -> Trainin
         training_id=7,
         list_id=3,
         callback_url="http://backend/webhooks/training-update",
-        webhook_secret="s3cret",
+        webhook_token=JOB_TOKEN,
         user_id=1,
         list=ListInput(id=3, name="Herramientas", description="Catálogo de ferretería"),
         elements=elements

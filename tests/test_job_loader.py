@@ -11,7 +11,7 @@ BACKEND_PAYLOAD = {
     "list_id": 5,
     "user_id": 1,
     "callback_url": "http://backend:8000/webhooks/training-update",
-    "webhook_secret": "s3cret",
+    "webhook_token": "12." + "ab" * 32,
     "list": {"id": 5, "name": "Museos", "description": "Museos de Baleares"},
     "elements": [
         {"id": 2, "text": "Museo B", "description": None, "generated_description": None, "trained": False},
@@ -25,11 +25,18 @@ def test_parses_the_exact_payload_the_backend_sends():
     job = parse_job(BACKEND_PAYLOAD)
 
     assert (job.training_id, job.list_id, job.user_id) == (12, 5, 1)
-    assert job.webhook_secret == "s3cret"
+    assert job.webhook_token == "12." + "ab" * 32
+    assert job.list.llm_enrichment is True
     assert job.list.context == "Museos. Museos de Baleares"
     assert job.option("train_all") is True
     assert job.option("strategy") == "default"
     assert [e.id for e in job.sorted_elements()] == [1, 2]
+
+
+def test_the_list_opt_out_flag_is_parsed_and_defaults_to_true():
+    job = parse_job({**BACKEND_PAYLOAD, "list": {"id": 5, "name": "Museos", "llm_enrichment": False}})
+    assert job.list.llm_enrichment is False
+    assert parse_job({**BACKEND_PAYLOAD, "list": {"id": 5, "llm_enrichment": "true"}}).list.llm_enrichment is True
 
 
 def test_options_also_accept_a_plain_object():

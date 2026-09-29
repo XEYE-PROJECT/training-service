@@ -35,6 +35,8 @@ def parse_job(payload: dict[str, Any]) -> TrainingJob:
         id=int(raw_list.get("id") or list_id),
         name=_opt_str(raw_list.get("name")),
         description=_opt_str(raw_list.get("description")),
+        # Ausente = True (jobs anteriores al opt-out); explícito manda.
+        llm_enrichment=True if raw_list.get("llm_enrichment") is None else _as_bool(raw_list.get("llm_enrichment")),
     )
 
     elements = [
@@ -53,7 +55,7 @@ def parse_job(payload: dict[str, Any]) -> TrainingJob:
         training_id=int(payload["training_id"]),
         list_id=list_id,
         callback_url=str(payload["callback_url"]),
-        webhook_secret=_opt_str(payload.get("webhook_secret")),
+        webhook_token=_opt_str(payload.get("webhook_token")),
         user_id=int(payload["user_id"]) if payload.get("user_id") is not None else None,
         list=list_input,
         elements=elements,

@@ -2,8 +2,10 @@
 
 Es el paso caro (segundos por elemento). Lo hacen viable la caché del backend
 (``elements.generated_description``, vaciada al cambiar texto/descripción; la opción
-``force_enrich`` la ignora) y el presupuesto ``ENRICH_MAX_ELEMENTS``: lo omitido se embebe
-con su texto tal cual y lo recoge el siguiente entrenamiento.
+``force_enrich`` la ignora) y dos presupuestos: ``ENRICH_MAX_ELEMENTS`` (elementos) y
+``LLM_MAX_COST_PER_JOB`` (gasto por tokens, ``ctx.spend``). Lo omitido se embebe con su texto
+tal cual y lo recoge el siguiente entrenamiento. Una lista con ``llm_enrichment=false`` (opt-out
+del dueño) se salta el paso entero: sus textos no salen hacia ningún modelo.
 
 Los enrichers remotos exponen ``enrich_many`` (concurrencia y, en Gemini, su Batch API):
 este paso lo usa si existe y solo cae al bucle secuencial con el LLM local. En ambos caminos
@@ -32,6 +34,9 @@ class EnrichStep:
 
     def run(self, ctx: TrainingContext) -> None:
         ctx.report("optimizing")
+        if not ctx.job.list.llm_enrichment:
+            logger.info("List %d opted out of LLM enrichment; embedding raw element texts", ctx.job.list_id)
+            return
         if ctx.enricher is None:
             logger.info("No enricher configured; embedding raw element texts")
             return
@@ -67,13 +72,21 @@ class EnrichStep:
 
         heartbeat = self._make_heartbeat(ctx)
         if hasattr(ctx.enricher, "enrich_many"):
-            fresh = ctx.enricher.enrich_many(pending, ctx.job.list, heartbeat=heartbeat)
+            fresh = ctx.enricher.enrich_many(pending, ctx.job.list, heartbeat=heartbeat, meter=ctx.spend)
         else:
             fresh = self._enrich_sequentially(ctx.enricher, ctx, pending, heartbeat)
 
         for element_id, enrichment in fresh.items():
             ctx.enrichments[element_id] = enrichment
             ctx.fresh_enrichments[element_id] = enrichment.to_json()
+        if ctx.spend.exhausted:
+            logger.warning(
+                "LLM budget exhausted (%.6f of %.6f) after %d/%d elements; the rest keep their raw text this run",
+                ctx.spend.cost,
+                ctx.spend.max_cost,
+                len(fresh),
+                len(pending),
+            )
 
     @staticmethod
     def _enrich_sequentially(
@@ -81,8 +94,10 @@ class EnrichStep:
     ) -> dict[int, Enrichment]:
         results: dict[int, Enrichment] = {}
         for done, element in enumerate(pending, start=1):
+            if ctx.spend.exhausted:
+                break
             try:
-                enrichment = enricher.enrich(element, ctx.job.list)
+                enrichment = enricher.enrich(element, ctx.job.list, meter=ctx.spend)
             except Exception:  # un elemento fallido no debe tumbar el entrenamiento entero
                 logger.exception("Enrichment failed for element %d", element.id)
                 continue

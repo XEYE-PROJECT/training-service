@@ -17,6 +17,7 @@ from app.application.ports import Embedder, Enricher, ProgressReporter
 from app.application.strategies import build_pipeline
 from app.core.config import Settings
 from app.domain.models import TrainingJob, TrainingResult
+from app.domain.spend import SpendMeter
 from app.domain.wire import encode_matrix
 
 logger = logging.getLogger(__name__)
@@ -42,6 +43,11 @@ class RunTraining:
             embedder=self._embedder,
             enricher=self._enricher,
             reporter=reporter,
+            spend=SpendMeter(
+                self._settings.llm_price_per_million_input_tokens,
+                self._settings.llm_price_per_million_output_tokens,
+                self._settings.llm_max_cost_per_job,
+            ),
         )
 
         started = time.monotonic()
@@ -63,6 +69,9 @@ class RunTraining:
             time=timings,
             enriched_count=len(ctx.fresh_enrichments),
             cached_count=len(ctx.enrichments) - len(ctx.fresh_enrichments),
+            llm_usage=ctx.spend.usage,
+            llm_cost=ctx.spend.cost,
+            llm_budget_exhausted=ctx.spend.exhausted,
         )
 
     def _model_metadata(self, job: TrainingJob, strategy: str, dimension: int) -> str:
@@ -93,11 +102,17 @@ def completion_payload(job: TrainingJob, result: TrainingResult, cost: dict[str,
         "described_count": result.enriched_count + result.cached_count,
         "time": result.time,
         "cost": cost,
+        "usage": {
+            "llm_input_tokens": result.llm_usage.input_tokens,
+            "llm_output_tokens": result.llm_usage.output_tokens,
+            "llm_requests": result.llm_usage.requests,
+            "llm_budget_exhausted": result.llm_budget_exhausted,
+        },
     }
 
 
-def compute_cost(seconds: int, price_per_hour: float) -> dict[str, float]:
-    if price_per_hour <= 0 or seconds <= 0:
-        return {"runpod": 0.0, "total": 0.0}
-    amount = round(seconds / 3600.0 * price_per_hour, 6)
-    return {"runpod": amount, "total": amount}
+def compute_cost(seconds: int, price_per_hour: float, llm_cost: float = 0.0) -> dict[str, float]:
+    """Coste real del run: cómputo por tiempo (``COMPUTE_PRICE_PER_HOUR``) + LLM por tokens."""
+    runpod = round(seconds / 3600.0 * price_per_hour, 6) if price_per_hour > 0 and seconds > 0 else 0.0
+    llm = round(max(0.0, llm_cost), 6)
+    return {"runpod": runpod, "llm": llm, "total": round(runpod + llm, 6)}

@@ -7,6 +7,7 @@ from typing import Any, Protocol
 import numpy as np
 
 from app.domain.models import ElementInput, Enrichment, ListInput
+from app.domain.spend import SpendMeter
 
 
 class Embedder(Protocol):
@@ -23,14 +24,17 @@ class Embedder(Protocol):
 class Enricher(Protocol):
     """Genera el enriquecimiento LLM de un elemento. ``None`` = sin enriquecimiento disponible.
 
-    Los adaptadores remotos exponen además ``enrich_many(elements, list_context,
-    heartbeat=None) -> dict[id, Enrichment]``: ``EnrichStep`` lo detecta con ``hasattr``
-    y lo prefiere (peticiones concurrentes y, en Gemini, su Batch API)."""
+    ``meter`` recibe los tokens que reporte el proveedor (gasto del job). Los adaptadores
+    remotos exponen además ``enrich_many(elements, list_context, heartbeat=None, meter=None)
+    -> dict[id, Enrichment]``: ``EnrichStep`` lo detecta con ``hasattr`` y lo prefiere
+    (peticiones concurrentes y, en Gemini, su Batch API); esa ruta respeta el tope de gasto."""
 
     @property
     def model_name(self) -> str | None: ...
 
-    def enrich(self, element: ElementInput, list_context: ListInput) -> Enrichment | None: ...
+    def enrich(
+        self, element: ElementInput, list_context: ListInput, meter: SpendMeter | None = None
+    ) -> Enrichment | None: ...
 
 
 class ProgressReporter(Protocol):

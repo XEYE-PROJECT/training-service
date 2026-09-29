@@ -15,6 +15,10 @@ así que los remotos enriquecen en lotes:
   *todos* los hilos, no solo al que lo recibió. Y los elementos que agoten sus reintentos se
   reintentan en pasadas de rescate (``LLM_RETRY_ROUNDS``) tras un respiro
   (``LLM_RETRY_ROUND_WAIT_SECONDS``): un pico de cuota retrasa descripciones, no las pierde.
+- **Gasto**: cada respuesta reporta sus tokens (``usage`` en Groq, ``usageMetadata`` en Gemini)
+  y van al medidor del job; con ``LLM_MAX_COST_PER_JOB`` los hilos dejan de lanzar peticiones en
+  cuanto el gasto alcanza el tope. Todas las peticiones llevan el tope de tokens de salida y la
+  temperatura configurados (``LLM_MAX_TOKENS``, ``LLM_TEMPERATURE``), igual que el LLM local.
 - **Batch API de Gemini** (``LLM_BATCH_THRESHOLD``): a partir de ese tamaño el job entero se
   envía a ``:batchGenerateContent`` (50% del precio estándar), troceado en jobs de
   ``LLM_BATCH_CHUNK_SIZE`` para respetar el límite inline de ~20 MB, y se sondea hasta que
@@ -36,6 +40,7 @@ import httpx
 
 from app.core.config import Settings
 from app.domain.models import ElementInput, Enrichment, ListInput
+from app.domain.spend import SpendMeter
 from app.infrastructure.enrichment.prompt import SYSTEM_PROMPT, build_user_prompt, parse_response
 
 logger = logging.getLogger(__name__)
@@ -88,7 +93,9 @@ class _RemoteEnricher:
         self._client = httpx.Client(timeout=settings.llm_api_timeout_seconds, headers=headers)
         self._limiter = _RateLimiter(settings.llm_requests_per_minute)
 
-    def enrich(self, element: ElementInput, list_context: ListInput) -> Enrichment | None:
+    def enrich(
+        self, element: ElementInput, list_context: ListInput, meter: SpendMeter | None = None
+    ) -> Enrichment | None:
         raise NotImplementedError
 
     def enrich_many(
@@ -96,14 +103,16 @@ class _RemoteEnricher:
         elements: list[ElementInput],
         list_context: ListInput,
         heartbeat: Heartbeat | None = None,
+        meter: SpendMeter | None = None,
     ) -> dict[int, Enrichment]:
         """Enriquece en paralelo. Un elemento fallido nunca tumba a los demás: se reintenta
-        en pasadas de rescate tras un respiro y solo si sigue fallando se queda sin descripción."""
+        en pasadas de rescate tras un respiro y solo si sigue fallando se queda sin descripción.
+        Con el tope de gasto agotado no se lanza ninguna petición más (ni pasadas de rescate)."""
         results: dict[int, Enrichment] = {}
         pending = list(elements)
         rounds = 1 + max(0, self._settings.llm_retry_rounds)
         for round_no in range(1, rounds + 1):
-            if not pending:
+            if not pending or _exhausted(meter):
                 break
             if round_no > 1:
                 logger.warning(
@@ -113,8 +122,8 @@ class _RemoteEnricher:
                     rounds,
                 )
                 _sleep_with_heartbeat(self._settings.llm_retry_round_wait_seconds, heartbeat)
-            pending = self._enrich_round(pending, list_context, results, heartbeat)
-        if pending:
+            pending = self._enrich_round(pending, list_context, results, heartbeat, meter)
+        if pending and not _exhausted(meter):
             logger.warning(
                 "%d element(s) still without enrichment after %d round(s); they keep their raw text this run",
                 len(pending),
@@ -128,30 +137,43 @@ class _RemoteEnricher:
         list_context: ListInput,
         results: dict[int, Enrichment],
         heartbeat: Heartbeat | None,
+        meter: SpendMeter | None,
     ) -> list[ElementInput]:
         """Una pasada concurrente; devuelve los elementos cuya petición falló (candidatos
-        a la siguiente pasada). Un parseo vacío no es fallo: reintentarlo no lo cambia."""
+        a la siguiente pasada). Un parseo vacío no es fallo: reintentarlo no lo cambia. Los
+        elementos que no llegaron a pedirse por el tope de gasto tampoco se devuelven: ya no
+        hay presupuesto para reintentarlos."""
         workers = max(1, self._settings.llm_concurrency)
         failed: list[ElementInput] = []
+        skipped = 0
 
-        def one(element: ElementInput) -> tuple[ElementInput, Enrichment | None, bool]:
+        def one(element: ElementInput) -> tuple[ElementInput, Enrichment | None, str]:
+            if _exhausted(meter):
+                return element, None, "skipped"
             try:
-                return element, self.enrich(element, list_context), False
+                return element, self.enrich(element, list_context, meter=meter), "ok"
             except Exception:
                 logger.exception("Enrichment failed for element %d", element.id)
-                return element, None, True
+                return element, None, "error"
 
         with ThreadPoolExecutor(max_workers=workers) as pool:
-            for done, (element, enrichment, error) in enumerate(pool.map(one, elements), start=1):
-                if error:
+            for done, (element, enrichment, outcome) in enumerate(pool.map(one, elements), start=1):
+                if outcome == "error":
                     failed.append(element)
+                elif outcome == "skipped":
+                    skipped += 1
                 elif enrichment is not None and not enrichment.is_empty():
                     results[element.id] = enrichment
                 if heartbeat:
                     heartbeat()
                 if done % 100 == 0:
                     logger.info("Enriched %d/%d", done, len(elements))
+        if skipped:
+            logger.warning("%d element(s) not sent to the LLM: the job's spending cap was reached", skipped)
         return failed
+
+    def _generation_config(self) -> tuple[int, float]:
+        return max(1, self._settings.llm_max_tokens), self._settings.llm_temperature
 
     def _post_with_retry(self, url: str, payload: dict[str, Any]) -> httpx.Response:
         """POST con reintentos ante 429/5xx y errores de red. Respeta lo que pida esperar
@@ -201,7 +223,10 @@ class GroqEnricher(_RemoteEnricher):
     def model_name(self) -> str:
         return self._model
 
-    def enrich(self, element: ElementInput, list_context: ListInput) -> Enrichment | None:
+    def enrich(
+        self, element: ElementInput, list_context: ListInput, meter: SpendMeter | None = None
+    ) -> Enrichment | None:
+        max_tokens, temperature = self._generation_config()
         response = self._post_with_retry(
             GROQ_URL,
             {
@@ -210,11 +235,16 @@ class GroqEnricher(_RemoteEnricher):
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user", "content": build_user_prompt(element, list_context)},
                 ],
-                "temperature": 0.3,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
                 "response_format": {"type": "json_object"},
             },
         )
-        content = response.json()["choices"][0]["message"].get("content")
+        payload = response.json()
+        if meter is not None:
+            usage = payload.get("usage") or {}
+            meter.add(usage.get("prompt_tokens"), usage.get("completion_tokens"))
+        content = payload["choices"][0]["message"].get("content")
         return parse_response(content, self._model)
 
 
@@ -230,32 +260,35 @@ class GeminiEnricher(_RemoteEnricher):
     def model_name(self) -> str:
         return self._model
 
-    def enrich(self, element: ElementInput, list_context: ListInput) -> Enrichment | None:
+    def enrich(
+        self, element: ElementInput, list_context: ListInput, meter: SpendMeter | None = None
+    ) -> Enrichment | None:
         response = self._post_with_retry(
             GEMINI_URL.format(model=self._model), self._request_body(element, list_context)
         )
-        return self._parse_generate_response(response.json())
+        return self._parse_generate_response(response.json(), meter)
 
     def enrich_many(
         self,
         elements: list[ElementInput],
         list_context: ListInput,
         heartbeat: Heartbeat | None = None,
+        meter: SpendMeter | None = None,
     ) -> dict[int, Enrichment]:
         threshold = self._settings.llm_batch_threshold
-        if threshold <= 0 or len(elements) < threshold:
-            return super().enrich_many(elements, list_context, heartbeat)
+        if threshold <= 0 or len(elements) < threshold or _exhausted(meter):
+            return super().enrich_many(elements, list_context, heartbeat, meter)
         try:
-            results, unresolved = self._enrich_via_batch_api(elements, list_context, heartbeat)
+            results, unresolved = self._enrich_via_batch_api(elements, list_context, heartbeat, meter)
         except Exception:
             logger.exception("Gemini Batch API failed; falling back to concurrent requests")
-            return super().enrich_many(elements, list_context, heartbeat)
-        if unresolved:
+            return super().enrich_many(elements, list_context, heartbeat, meter)
+        if unresolved and not _exhausted(meter):
             logger.warning(
                 "Batch API left %d element(s) unresolved; finishing them with concurrent requests",
                 len(unresolved),
             )
-            results.update(super().enrich_many(unresolved, list_context, heartbeat))
+            results.update(super().enrich_many(unresolved, list_context, heartbeat, meter))
         return results
 
     # --- Batch API ------------------------------------------------------------------
@@ -265,6 +298,7 @@ class GeminiEnricher(_RemoteEnricher):
         elements: list[ElementInput],
         list_context: ListInput,
         heartbeat: Heartbeat | None,
+        meter: SpendMeter | None,
     ) -> tuple[dict[int, Enrichment], list[ElementInput]]:
         chunk = max(1, self._settings.llm_batch_chunk_size)
         jobs: list[tuple[str, dict[str, ElementInput]]] = []
@@ -307,7 +341,7 @@ class GeminiEnricher(_RemoteEnricher):
                 if element is None:
                     continue
                 answered.add(element.id)
-                enrichment = self._parse_generate_response(item.get("response") or {})
+                enrichment = self._parse_generate_response(item.get("response") or {}, meter)
                 if enrichment is not None and not enrichment.is_empty():
                     results[element.id] = enrichment
             unresolved.extend(e for e in by_key.values() if e.id not in answered)
@@ -345,15 +379,20 @@ class GeminiEnricher(_RemoteEnricher):
 
     def _request_body(self, element: ElementInput, list_context: ListInput) -> dict[str, Any]:
         prompt = f"{SYSTEM_PROMPT}\n\n{build_user_prompt(element, list_context)}"
+        max_tokens, temperature = self._generation_config()
         return {
             "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {
-                "temperature": 0.3,
+                "temperature": temperature,
+                "maxOutputTokens": max_tokens,
                 "responseMimeType": "application/json",
             },
         }
 
-    def _parse_generate_response(self, payload: dict[str, Any]) -> Enrichment | None:
+    def _parse_generate_response(self, payload: dict[str, Any], meter: SpendMeter | None = None) -> Enrichment | None:
+        if meter is not None:
+            usage = payload.get("usageMetadata") or {}
+            meter.add(usage.get("promptTokenCount"), usage.get("candidatesTokenCount"))
         candidates = payload.get("candidates") or []
         if not candidates:
             return None
@@ -384,6 +423,10 @@ class GeminiEnricher(_RemoteEnricher):
                     if found:
                         return found
         return []
+
+
+def _exhausted(meter: SpendMeter | None) -> bool:
+    return meter is not None and meter.exhausted
 
 
 def _provider_retry_hint(response: httpx.Response | None) -> float | None:

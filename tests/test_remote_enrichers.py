@@ -13,6 +13,7 @@ import time
 import httpx
 
 from app.domain.models import ElementInput, ListInput
+from app.domain.spend import SpendMeter
 from app.infrastructure.enrichment.api_llm import GeminiEnricher, GroqEnricher, _RateLimiter
 from tests.conftest import make_settings
 
@@ -99,6 +100,101 @@ def test_retriable_statuses_are_retried():
 
     assert enricher.enrich(ElementInput(id=1, text="item 1"), LIST) is not None
     assert calls["n"] == 2
+
+
+# --- Tokens de salida, temperatura y gasto --------------------------------------------
+
+
+def test_groq_requests_carry_the_configured_output_cap_and_temperature_and_report_usage():
+    bodies: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.read()))
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": enrichment_json(1)}}],
+                "usage": {"prompt_tokens": 120, "completion_tokens": 45},
+            },
+        )
+
+    enricher = GroqEnricher(gemini_settings(groq_api_key="k", llm_max_tokens=256, llm_temperature=0.7))
+    use_transport(enricher, handler)
+    meter = SpendMeter(price_per_million_output=2.0)
+
+    assert enricher.enrich(ElementInput(id=1, text="item 1"), LIST, meter=meter) is not None
+    assert bodies[0]["max_tokens"] == 256 and bodies[0]["temperature"] == 0.7
+    assert (meter.usage.input_tokens, meter.usage.output_tokens, meter.usage.requests) == (120, 45, 1)
+    assert meter.cost == 0.00009
+
+
+def test_gemini_requests_carry_the_configured_output_cap_and_temperature_and_report_usage():
+    bodies: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.read()))
+        return httpx.Response(
+            200,
+            json={**gemini_response_for(1), "usageMetadata": {"promptTokenCount": 300, "candidatesTokenCount": 50}},
+        )
+
+    enricher = GeminiEnricher(gemini_settings(llm_max_tokens=200, llm_temperature=0.1))
+    use_transport(enricher, handler)
+    meter = SpendMeter(price_per_million_input=1.0)
+
+    assert enricher.enrich(ElementInput(id=1, text="item 1"), LIST, meter=meter) is not None
+    config = bodies[0]["generationConfig"]
+    assert config["maxOutputTokens"] == 200 and config["temperature"] == 0.1
+    assert meter.usage == meter.usage.__class__(300, 50, 1)
+    assert meter.cost == 0.0003
+
+
+def test_the_spending_cap_stops_new_requests_and_skips_rescue_rounds():
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        element_id = element_id_from_prompt(request)
+        return httpx.Response(
+            200,
+            json={
+                "choices": [{"message": {"content": enrichment_json(element_id)}}],
+                "usage": {"prompt_tokens": 1_000_000, "completion_tokens": 0},  # 1.0 por petición
+            },
+        )
+
+    # Concurrencia 1 para que el tope se evalúe petición a petición.
+    enricher = GroqEnricher(gemini_settings(groq_api_key="k", llm_concurrency=1, llm_retry_rounds=3))
+    use_transport(enricher, handler)
+    meter = SpendMeter(price_per_million_input=1.0, max_cost=2.0)
+
+    results = enricher.enrich_many(make_elements(6), LIST, meter=meter)
+
+    assert calls["n"] == 2  # la segunda alcanza el tope; ni una más (tampoco pasadas de rescate)
+    assert set(results) == {1, 2}
+    assert meter.exhausted is True
+
+
+def test_gemini_batch_usage_is_metered_too():
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        response = batch_handler(seen)(request)
+        if "/batches/" in str(request.url):
+            payload = response.json()
+            for item in payload["response"]["inlinedResponses"]["inlinedResponses"]:
+                item["response"]["usageMetadata"] = {"promptTokenCount": 10, "candidatesTokenCount": 5}
+            return httpx.Response(200, json=payload)
+        return response
+
+    enricher = GeminiEnricher(gemini_settings(llm_batch_threshold=2, llm_batch_chunk_size=10))
+    use_transport(enricher, handler)
+    meter = SpendMeter()
+
+    results = enricher.enrich_many(make_elements(3), LIST, meter=meter)
+
+    assert set(results) == {1, 2, 3}
+    assert (meter.usage.input_tokens, meter.usage.output_tokens, meter.usage.requests) == (30, 15, 3)
 
 
 # --- Límites del proveedor ----------------------------------------------------------

@@ -11,7 +11,7 @@ import pytest
 from app.core.worker import Worker
 from app.domain.wire import decode_matrix
 from app.infrastructure.embedding.sentence_transformer_embedder import SentenceTransformerEmbedder
-from tests.conftest import DIM, FakeEmbedder, FakeEnricher, make_job, make_settings
+from tests.conftest import DIM, JOB_TOKEN, FakeEmbedder, FakeEnricher, make_job, make_settings
 
 
 def make_worker() -> Worker:
@@ -41,6 +41,15 @@ def test_job_option_selects_another_model_and_caches_it():
     assert worker._embedder_for(job) is embedder
 
 
+def test_a_model_outside_the_allowlist_is_rejected_before_touching_the_network():
+    worker = make_worker()
+    job = make_job(options={"embedding_model": "someone/evil-model"})
+
+    with pytest.raises(ValueError, match="not allowed"):
+        worker._embedder_for(job)
+    assert worker._embedders == {}
+
+
 class RecordingReporter:
     """Sustituye a WebhookReporter: captura el `failed` sin tocar la red."""
 
@@ -62,35 +71,57 @@ class RecordingReporter:
         raise AssertionError("training must not start")
 
 
-def test_missing_webhook_secret_fails_before_any_compute(monkeypatch):
+@pytest.fixture
+def recording(monkeypatch) -> type[RecordingReporter]:
     import app.core.worker as worker_module
 
     RecordingReporter.instances.clear()
     monkeypatch.setattr(worker_module, "WebhookReporter", RecordingReporter)
-    worker = make_worker()
-    job = make_job(webhook_secret=None, callback_url="https://backend.xeye.es/webhooks/training-update")
-
-    outcome = worker.run(job)
-
-    assert outcome["status"] == "error"
-    assert "WEBHOOK_SECRET" in outcome["error"]
-    assert RecordingReporter.instances[0].failures == [outcome["error"]]
+    return RecordingReporter
 
 
-def test_dev_webhook_secret_against_a_production_backend_fails_fast(monkeypatch):
-    import app.core.worker as worker_module
-
-    RecordingReporter.instances.clear()
-    monkeypatch.setattr(worker_module, "WebhookReporter", RecordingReporter)
-    worker = Worker(settings=make_settings(webhook_secret="dev-webhook-secret"), embedder=FakeEmbedder(), enricher=None)
-    job = make_job(webhook_secret=None, callback_url="https://backend.xeye.es/webhooks/training-update")
-
-    outcome = worker.run(job)
+@pytest.mark.parametrize(
+    "token", [None, "", "not-a-token", "8." + "0" * 64], ids=["missing", "blank", "shape", "other-run"]
+)
+def test_a_missing_or_foreign_webhook_token_fails_before_any_compute(recording, token):
+    outcome = make_worker().run(make_job(webhook_token=token))
 
     assert outcome["status"] == "error"
-    assert "development" in outcome["error"]
-    # El secreto de dev sí vale contra un backend local (http): no se bloquea el flujo de desarrollo.
-    assert worker.settings.webhook_secret_problem("http://xeye-java-backend:8000/webhooks") is None
+    assert "webhook_token" in outcome["error"]
+    # Se reporta `failed` (el backend lo rechazará con 403 si el token no vale, y lo marcará estancado).
+    assert recording.instances[0].failures == [outcome["error"]]
+    assert recording.instances[0].kwargs["token"] == token
+
+
+def test_a_callback_to_a_forbidden_destination_is_never_called(recording):
+    # http sin permiso explícito: ni siquiera el `failed` sale hacia esa URL.
+    worker = Worker(settings=make_settings(callback_allow_http=False), embedder=FakeEmbedder(), enricher=None)
+
+    outcome = worker.run(make_job())
+
+    assert outcome["status"] == "error"
+    assert "https" in outcome["error"]
+    assert recording.instances == []
+
+
+def test_the_callback_host_allowlist_is_enforced(recording):
+    settings = make_settings(callback_allowed_hosts="hooks.xeye.es, backend")
+    worker = Worker(settings=settings, embedder=FakeEmbedder(), enricher=None)
+
+    assert worker.run(make_job(callback_url="http://evil.example/webhooks"))["error"].startswith("callback host")
+    assert recording.instances == []
+    # Con un host permitido se crea el reporter y el job pasa las comprobaciones previas
+    # (RecordingReporter rechaza `phase`, así que el run acaba en `failed`, ya dentro del pipeline).
+    worker.run(make_job(callback_url="http://backend/webhooks/training-update"))
+    assert len(recording.instances) == 1 and recording.instances[0].kwargs["callback_url"].startswith("http://backend")
+
+
+def test_a_disallowed_embedding_model_is_reported_failed_before_loading_anything(recording):
+    outcome = make_worker().run(make_job(options={"embedding_model": "someone/evil-model"}))
+
+    assert outcome["status"] == "error"
+    assert "not allowed" in outcome["error"]
+    assert recording.instances[0].failures == [outcome["error"]]
 
 
 # --- Worker.run de extremo a extremo ------------------------------------------------------
@@ -147,7 +178,7 @@ def test_run_trains_end_to_end_and_delivers_the_completed_payload(reporter):
         "callback_url": job.callback_url,
         "training_id": 7,
         "list_id": 3,
-        "secret": "s3cret",
+        "token": JOB_TOKEN,
         "timeout_seconds": 12.5,
         "retries": 4,
     }
@@ -162,7 +193,31 @@ def test_run_trains_end_to_end_and_delivers_the_completed_payload(reporter):
     assert json.loads(payload["model"])["embedding_model"] == "fake-model"
     assert set(payload["generated_descriptions"]) == {"1", "2"}
     assert isinstance(payload["time"]["total_seconds"], int)
-    assert payload["cost"] == {"runpod": 0.0, "total": 0.0}  # COMPUTE_PRICE_PER_HOUR=0
+    assert payload["cost"] == {"runpod": 0.0, "llm": 0.0, "total": 0.0}  # sin tarifas configuradas
+    # Los tokens se cuentan aunque no haya tarifa (2 elementos x 100/40 del FakeEnricher).
+    assert payload["usage"] == {
+        "llm_input_tokens": 200,
+        "llm_output_tokens": 80,
+        "llm_requests": 2,
+        "llm_budget_exhausted": False,
+    }
+
+
+def test_run_reports_the_real_llm_cost_and_compute_cost(reporter):
+    settings = make_settings(
+        compute_price_per_hour=3.6,
+        llm_price_per_million_input_tokens=1.0,
+        llm_price_per_million_output_tokens=10.0,
+    )
+    worker = Worker(settings=settings, embedder=FakeEmbedder(), enricher=FakeEnricher())
+
+    outcome = worker.run(make_job())
+
+    assert outcome["status"] == "ok"
+    cost = reporter.instances[0].completed_payload["cost"]
+    # 200 tokens de entrada a 1/M + 80 de salida a 10/M = 0.001; el cómputo depende del reloj.
+    assert cost["llm"] == 0.001
+    assert cost["total"] == round(cost["runpod"] + cost["llm"], 6)
 
 
 def test_run_reports_failed_and_returns_an_error_when_the_use_case_raises(reporter, monkeypatch):

@@ -211,7 +211,8 @@ Un job (lo genera el backend; los dos entrypoints leen el mismo objeto):
 {
   "training_id": 1, "list_id": 5, "user_id": 1,
   "callback_url": "http://xeye-java-backend:8000/webhooks/training-update",
-  "list": {"id": 5, "name": "Ferretería", "description": "Catálogo"},
+  "webhook_token": "1.3f9a…<hex HMAC-SHA256>",
+  "list": {"id": 5, "name": "Ferretería", "description": "Catálogo", "llm_enrichment": true},
   "elements": [{"id": 1, "text": "martillo", "description": null,
                 "generated_description": null, "trained": false}],
   "options": [{"key": "train_all", "value": true}]
@@ -219,16 +220,36 @@ Un job (lo genera el backend; los dos entrypoints leen el mismo objeto):
 ```
 
 Variables en `.env.example`; referencia completa con lo **obligatorio en producción** en
-[CONFIG.md](CONFIG.md). En el backend: `TRAINING_PROVIDER=docker|runpod`,
-`TRAINING_WEBHOOK_SECRET` = el `WEBHOOK_SECRET` de aquí, y `BACKEND_URL` con la URL que el
-**contenedor** usa para llamar al webhook (no `localhost`).
+[CONFIG.md](CONFIG.md). En el backend: `TRAINING_PROVIDER=docker|runpod` y `BACKEND_URL` con la
+URL que el **contenedor** usa para llamar al webhook (no `localhost`; en local el backend añade
+`-e CALLBACK_ALLOW_HTTP=true` porque esa URL es `http://`).
 
-**Secretos.** `WEBHOOK_SECRET` llega siempre por el entorno (el provider `docker` lo pasa con
-`-e`; en RunPod es una variable del endpoint): el backend no lo escribe en el job, así el
-JSON en disco o almacenado por RunPod no contiene credenciales. **Fail fast:** `ENRICHER=groq|gemini`
-sin su API key, un `ENRICHER` desconocido o `CALLBACK_RETRIES=0` impiden arrancar; y un job cuyo
-callback es `https://` (backend de producción) con `WEBHOOK_SECRET` vacío, corto o de desarrollo
-se reporta `failed` **antes** de cargar modelos ni pagar cómputo (contra `http://`, un backend
-local, basta con que el secreto exista). Los secretos son `SecretStr`: no salen en logs ni en `repr`. `SENTRY_DSN` (opcional)
-activa el error tracking; los fallos de un entrenamiento se envían antes de que el contenedor
-termine.
+**Sin secretos en el worker.** `webhook_token` es un token **por entrenamiento**
+(`<training_id>.<HMAC-SHA256(secreto, training_id)>`) que el backend deriva de su
+`TRAINING_WEBHOOK_SECRET` al lanzar: el worker lo devuelve tal cual en `X-Webhook-Token` y solo
+sirve para reportar sobre ese run. El secreto nunca llega aquí (ni al fichero del job, ni al
+endpoint de RunPod). **Lo que sí se comprueba antes de cargar modelos ni pagar cómputo** (el job
+se reporta `failed` y se sale): un token ausente o de otro entrenamiento; un `callback_url` que no
+sea `https://` (salvo `CALLBACK_ALLOW_HTTP=true`) o cuyo host no esté en `CALLBACK_ALLOWED_HOSTS`
+(en ese caso ni el `failed` se envía); y una opción `embedding_model` fuera de la allowlist
+(`EMBEDDING_MODELS_ALLOWED` + el modelo por defecto: las imágenes la fijan a lo que hornean, así
+un job manipulado no descarga un modelo cualquiera de Hugging Face). `ENRICHER=groq|gemini` sin
+su API key, un `ENRICHER` desconocido, `CALLBACK_RETRIES=0` o un tope de gasto sin tarifas impiden
+arrancar. Las claves de API son `SecretStr`: no salen en logs ni en `repr`. `SENTRY_DSN`
+(opcional) activa el error tracking; los fallos de un entrenamiento se envían antes de que el
+contenedor termine.
+
+**Datos hacia el LLM.** Una lista con `llm_enrichment: false` (opt-out del dueño en la consola)
+salta el paso LLM entero, diga lo que diga la estrategia: sus textos no salen hacia ningún modelo.
+Todas las peticiones (local, Groq y Gemini) llevan `LLM_MAX_TOKENS` como tope de salida y
+`LLM_TEMPERATURE`. Cada respuesta reporta sus tokens; con `LLM_PRICE_PER_MILLION_INPUT_TOKENS` /
+`_OUTPUT_TOKENS` se convierten en coste y `LLM_MAX_COST_PER_JOB` frena las peticiones en cuanto se
+alcanza (lo no enriquecido conserva su texto y lo recoge el siguiente entrenamiento). El webhook
+`completed` lleva `cost: {runpod, llm, total}` (coste real: tiempo × `COMPUTE_PRICE_PER_HOUR` y
+tokens × tarifa) y `usage: {llm_input_tokens, llm_output_tokens, llm_requests, llm_budget_exhausted}`.
+
+**Imágenes.** Bases fijadas por digest, `torch` fijado, el GGUF se verifica por SHA-256 tras
+descargarlo y los modelos de sentence-transformers por revisión (commit de Hugging Face): si
+upstream cambia, el build falla en vez de hornear otra cosa. El contenedor corre como el usuario
+`xeye` (uid 1000, sin root) con `HF_HUB_OFFLINE=1`: nada se descarga en ejecución. `.dockerignore`
+deja fuera tests, ejemplos, cachés y `.env`. Trivy escanea las dependencias en CI.
