@@ -11,7 +11,7 @@
 # verificados (GGUF por SHA-256, sentence-transformers por revisión de Hugging Face) y en
 # ejecución HF_HUB_OFFLINE=1 impide cualquier descarga: solo se puede usar lo horneado, que es
 # exactamente la allowlist EMBEDDING_MODELS_ALLOWED.
-FROM python:3.11-slim@sha256:e41613d42d4891e4930f79523f93f81bbc7632584ec65e36ab055f41a800b41e
+FROM python:3.14-slim@sha256:51dafde81dbdb6ebde285137a295cf18a47ca95234fe388a343719cb97305b3d
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
