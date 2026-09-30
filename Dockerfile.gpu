@@ -15,7 +15,7 @@
 # Bases fijadas por digest (Dependabot abre PR cuando cambian): el build de RunPod es reproducible.
 # Endurecimiento: mismo esquema que el Dockerfile de CPU (usuario `xeye` sin root, torch fijado,
 # GGUF por SHA-256, modelos por revisión, HF_HUB_OFFLINE=1 y allowlist de modelos).
-FROM nvidia/cuda:12.8.1-devel-ubuntu22.04@sha256:a99a1860ba8e2916e5c3e73b72ec4c4301653a84586e05bfc9a2aa2d58027e97 AS llama-build
+FROM nvidia/cuda:12.8.2-devel-ubuntu22.04@sha256:4c3d61ac8217a4933cc3855ddd0a75e2a058b6757a170993040272f4310ef113 AS llama-build
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         python3.11 python3.11-venv python3-pip git build-essential cmake \
@@ -29,7 +29,7 @@ RUN python -m pip install --upgrade pip \
            "llama-cpp-python==0.3.34"
 
 # --- runtime --------------------------------------------------------------------------
-FROM nvidia/cuda:12.8.1-runtime-ubuntu22.04@sha256:4a801ef9232d2b05e69df4eb8aa054dbbe2824e5499e1e6e857320bb01ac41a9
+FROM nvidia/cuda:12.8.2-runtime-ubuntu22.04@sha256:74b1c7a184bf45d80c2991b3868d4a9188ab3fc5e118cff0f5065e20781d9c6b
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONUNBUFFERED=1 \
