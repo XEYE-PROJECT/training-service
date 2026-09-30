@@ -16,6 +16,9 @@ updates:
     schedule:
       interval: weekly
       day: monday
+    # Los rangos de requirements.txt solo se tocan si la versión nueva queda fuera de ellos (no
+    # una PR por cada release que sube el mínimo); las imágenes fijan lo que instalan.
+    versioning-strategy: increase-if-necessary
     groups:
       python-minor-patch:
         update-types: ["minor", "patch"]
@@ -24,9 +27,18 @@ updates:
       - dependency-name: torch
       - dependency-name: sentence-transformers
       - dependency-name: llama-cpp-python
+      # numpy va ligado a la versión de torch.
+      - dependency-name: numpy
 
   - package-ecosystem: docker
     directory: /
     schedule:
       interval: weekly
       day: monday
+    ignore:
+      # Python 3.11 -> 3.12+ (para Dependabot, salto "menor") y CUDA 12.x -> 13 obligan a cambiar
+      # las ruedas de torch y llama-cpp-python: a mano, reconstruyendo y probando un training real.
+      - dependency-name: python
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: nvidia/cuda
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
